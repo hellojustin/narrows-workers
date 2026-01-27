@@ -10,6 +10,18 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
+    "DownloadAudio": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "FetchRss": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "IngestTranscript": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "OnMediaConvertComplete": {
       "name": string
       "type": "sst.aws.Function"
@@ -25,6 +37,10 @@ declare module "sst" {
     "RssRefreshQueue": {
       "type": "sst.aws.Queue"
       "url": string
+    }
+    "StartProcessing": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "TranscriptIngestQueue": {
       "type": "sst.aws.Queue"

@@ -19,20 +19,33 @@ const commonEnv = {
 };
 
 // Fetch RSS - fetches and parses RSS feeds, creates/updates episodes
-rssRefreshQueue.subscribe({
+export const fetchRss = new sst.aws.Function("FetchRss", {
+  name: `narrows-${$app.stage}-fetch-rss`,
   handler: "packages/functions/src/fetch-rss/handler.main",
   runtime: "nodejs20.x",
   timeout: "2 minutes",
   memory: "512 MB",
+  permissions: [
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [rssRefreshQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [audioDownloadQueue.arn],
+    },
+  ],
   environment: {
     ...commonEnv,
     AUDIO_DOWNLOAD_QUEUE_URL: audioDownloadQueue.url,
   },
   link: [audioDownloadQueue],
 });
+rssRefreshQueue.subscribe(fetchRss.arn);
 
 // Download Audio - downloads audio files to S3
-audioDownloadQueue.subscribe({
+export const downloadAudio = new sst.aws.Function("DownloadAudio", {
+  name: `narrows-${$app.stage}-download-audio`,
   handler: "packages/functions/src/download-audio/handler.main",
   runtime: "nodejs20.x",
   timeout: "10 minutes",
@@ -42,6 +55,14 @@ audioDownloadQueue.subscribe({
       actions: ["s3:PutObject", "s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [audioDownloadQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [processingQueue.arn],
+    },
   ],
   environment: {
     ...commonEnv,
@@ -49,9 +70,11 @@ audioDownloadQueue.subscribe({
   },
   link: [processingQueue],
 });
+audioDownloadQueue.subscribe(downloadAudio.arn);
 
 // Start Processing - initiates both MediaConvert and Transcribe in parallel
-processingQueue.subscribe({
+export const startProcessing = new sst.aws.Function("StartProcessing", {
+  name: `narrows-${$app.stage}-start-processing`,
   handler: "packages/functions/src/start-processing/handler.main",
   runtime: "nodejs20.x",
   timeout: "2 minutes",
@@ -76,6 +99,10 @@ processingQueue.subscribe({
       actions: ["s3:GetObject", "s3:PutObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [processingQueue.arn],
+    },
   ],
   environment: {
     ...commonEnv,
@@ -83,9 +110,11 @@ processingQueue.subscribe({
     MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
   },
 });
+processingQueue.subscribe(startProcessing.arn);
 
 // Ingest Transcript - chunks and sends to Graphiti
-transcriptIngestQueue.subscribe({
+export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
+  name: `narrows-${$app.stage}-ingest-transcript`,
   handler: "packages/functions/src/ingest-transcript/handler.main",
   runtime: "nodejs20.x",
   timeout: "10 minutes",
@@ -95,6 +124,10 @@ transcriptIngestQueue.subscribe({
       actions: ["s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [transcriptIngestQueue.arn],
+    },
   ],
   environment: {
     ...commonEnv,
@@ -103,10 +136,11 @@ transcriptIngestQueue.subscribe({
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
   },
 });
+transcriptIngestQueue.subscribe(ingestTranscript.arn);
 
 // On MediaConvert Complete - handles MediaConvert completion events
-// This function is triggered by EventBridge (configured separately)
 export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {
+  name: `narrows-${$app.stage}-on-mediaconvert-complete`,
   handler: "packages/functions/src/on-media-convert-complete/handler.main",
   runtime: "nodejs20.x",
   timeout: "1 minute",
@@ -115,8 +149,8 @@ export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComple
 });
 
 // On Transcribe Complete - handles Transcribe completion events
-// This function is triggered by EventBridge (configured separately)
 export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete", {
+  name: `narrows-${$app.stage}-on-transcribe-complete`,
   handler: "packages/functions/src/on-transcribe-complete/handler.main",
   runtime: "nodejs20.x",
   timeout: "1 minute",
