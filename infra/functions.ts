@@ -10,6 +10,15 @@ import {
   transcriptIngestQueue,
 } from "./queues";
 
+// VPC configuration for Lambda functions
+// Required for accessing internal services like Graphiti
+const vpcConfig = process.env.VPC_SUBNET_IDS
+  ? {
+      securityGroups: (process.env.VPC_SECURITY_GROUP_IDS ?? "").split(",").filter(Boolean),
+      privateSubnets: (process.env.VPC_SUBNET_IDS ?? "").split(",").filter(Boolean),
+    }
+  : undefined;
+
 // Common environment variables for all functions
 const commonEnv = {
   MEDIA_BUCKET_NAME: mediaBucketName,
@@ -92,6 +101,7 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
       actions: [
         "transcribe:StartTranscriptionJob",
         "transcribe:GetTranscriptionJob",
+        "transcribe:TagResource",
       ],
       resources: ["*"],
     },
@@ -113,12 +123,14 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
 processingQueue.subscribe(startProcessing.arn);
 
 // Ingest Transcript - chunks and sends to Graphiti
+// Runs in VPC to access internal Graphiti service
 export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
   name: `narrows-${$app.stage}-ingest-transcript`,
   handler: "packages/functions/src/ingest-transcript/handler.main",
   runtime: "nodejs20.x",
   timeout: "10 minutes",
   memory: "1024 MB",
+  vpc: vpcConfig,
   permissions: [
     {
       actions: ["s3:GetObject"],
@@ -133,6 +145,7 @@ export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
     ...commonEnv,
     GRAPHITI_API_URL: process.env.GRAPHITI_API_URL ?? "",
     GRAPHITI_API_KEY: process.env.GRAPHITI_API_KEY ?? "",
+    GRAPHITI_GRAPH_ID: process.env.GRAPHITI_GRAPH_ID ?? "",
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
   },
 });

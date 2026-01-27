@@ -205,9 +205,14 @@ async function ingestChunkToGraphiti(
 ): Promise<string> {
   const graphitiUrl = process.env.GRAPHITI_API_URL;
   const graphitiKey = process.env.GRAPHITI_API_KEY;
+  const graphId = process.env.GRAPHITI_GRAPH_ID;
 
   if (!graphitiUrl) {
     throw new Error("GRAPHITI_API_URL must be set");
+  }
+
+  if (!graphId) {
+    throw new Error("GRAPHITI_GRAPH_ID must be set");
   }
 
   // Format the content with metadata
@@ -224,7 +229,7 @@ async function ingestChunkToGraphiti(
     method: "POST",
     headers,
     body: JSON.stringify({
-      group_id: seriesData.id,
+      group_id: graphId,
       messages: [
         {
           content,
