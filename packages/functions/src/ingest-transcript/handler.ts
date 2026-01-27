@@ -149,6 +149,54 @@ function chunkBySpeaker(segments: TranscriptSegment[]): TranscriptChunk[] {
 }
 
 /**
+ * Detect if a chunk is an advertisement using OpenAI
+ */
+async function isAdvertisement(
+  openai: OpenAI,
+  chunkText: string
+): Promise<boolean> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are a classifier that determines if podcast transcript text is an advertisement or sponsor segment.
+
+Classify as ADVERTISEMENT if the text contains:
+- Sponsor reads or mentions (e.g., "brought to you by", "sponsored by", "thanks to our sponsor")
+- Promo codes or discount offers (e.g., "use code X for 20% off")
+- Product pitches with URLs or calls to action (e.g., "visit example.com", "go to example.com/podcast")
+- Mid-roll or pre/post-roll ad scripts
+- Affiliate marketing content
+
+Classify as CONTENT if the text is:
+- Regular podcast discussion, interview, or conversation
+- Educational or informational content
+- Story narration or entertainment
+- Host banter or show segments (even if briefly mentioning the show's own products/Patreon)
+
+Respond with ONLY "ADVERTISEMENT" or "CONTENT".`,
+        },
+        {
+          role: "user",
+          content: chunkText.slice(0, 2000),
+        },
+      ],
+      max_tokens: 10,
+      temperature: 0,
+    });
+
+    const result = response.choices[0]?.message?.content?.trim().toUpperCase();
+    return result === "ADVERTISEMENT";
+  } catch (error) {
+    console.error("Error detecting advertisement:", error);
+    // On error, default to including the chunk (don't filter it out)
+    return false;
+  }
+}
+
+/**
  * Generate contextual summary for a chunk using OpenAI
  */
 async function generateChunkContext(
@@ -364,14 +412,26 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       const chunks = chunkBySpeaker(segments);
       console.log(`Created ${chunks.length} chunks`);
 
-      // 4. Process each chunk
+      // 4. Process each chunk (filter out advertisements)
       const graphitiEpisodeIds: string[] = [];
+      let skippedAds = 0;
+      let ingestedChunks = 0;
 
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         console.log(
           `Processing chunk ${i + 1}/${chunks.length} (${chunk.speakerLabel}, ${chunk.lines.length} lines)`
         );
+
+        // Check if this chunk is an advertisement
+        const isAd = await isAdvertisement(openai, chunk.text);
+        if (isAd) {
+          console.log(
+            `Skipping chunk ${i + 1}/${chunks.length} - detected as advertisement`
+          );
+          skippedAds++;
+          continue;
+        }
 
         // Generate contextual summary
         const context = await generateChunkContext(
@@ -388,10 +448,11 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           context,
           series,
           episode,
-          i,
-          chunks.length
+          ingestedChunks,
+          chunks.length - skippedAds
         );
         graphitiEpisodeIds.push(graphitiId);
+        ingestedChunks++;
 
         // Small delay to avoid rate limiting
         if (i < chunks.length - 1) {
@@ -403,7 +464,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       await updateEpisodeComplete(episodeId, graphitiEpisodeIds);
 
       console.log(
-        `Successfully ingested ${chunks.length} chunks for episode: ${episodeId}`
+        `Successfully ingested ${ingestedChunks} chunks for episode: ${episodeId} (skipped ${skippedAds} ad chunks)`
       );
     } catch (error) {
       console.error(`Error ingesting transcript for episode ${episodeId}:`, error);
