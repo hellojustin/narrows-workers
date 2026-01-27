@@ -19,8 +19,7 @@ const commonEnv = {
 };
 
 // Fetch RSS - fetches and parses RSS feeds, creates/updates episodes
-export const fetchRss = new sst.aws.Function("FetchRss", {
-  name: `narrows-${$app.stage}-fetch-rss`,
+rssRefreshQueue.subscribe({
   handler: "packages/functions/src/fetch-rss/handler.main",
   runtime: "nodejs20.x",
   timeout: "2 minutes",
@@ -29,17 +28,14 @@ export const fetchRss = new sst.aws.Function("FetchRss", {
     ...commonEnv,
     AUDIO_DOWNLOAD_QUEUE_URL: audioDownloadQueue.url,
   },
+  link: [audioDownloadQueue],
 });
 
-// Subscribe to RSS refresh queue
-rssRefreshQueue.subscribe(fetchRss.arn);
-
 // Download Audio - downloads audio files to S3
-export const downloadAudio = new sst.aws.Function("DownloadAudio", {
-  name: `narrows-${$app.stage}-download-audio`,
+audioDownloadQueue.subscribe({
   handler: "packages/functions/src/download-audio/handler.main",
   runtime: "nodejs20.x",
-  timeout: "10 minutes", // Large files can take time
+  timeout: "10 minutes",
   memory: "1024 MB",
   permissions: [
     {
@@ -51,18 +47,15 @@ export const downloadAudio = new sst.aws.Function("DownloadAudio", {
     ...commonEnv,
     PROCESSING_QUEUE_URL: processingQueue.url,
   },
+  link: [processingQueue],
 });
 
-// Subscribe to audio download queue
-audioDownloadQueue.subscribe(downloadAudio.arn);
-
-// Start MediaConvert - initiates HLS conversion
-export const startMediaConvert = new sst.aws.Function("StartMediaConvert", {
-  name: `narrows-${$app.stage}-start-media-convert`,
-  handler: "packages/functions/src/start-media-convert/handler.main",
+// Start Processing - initiates both MediaConvert and Transcribe in parallel
+processingQueue.subscribe({
+  handler: "packages/functions/src/start-processing/handler.main",
   runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
+  timeout: "2 minutes",
+  memory: "512 MB",
   permissions: [
     {
       actions: ["mediaconvert:CreateJob", "mediaconvert:DescribeEndpoints"],
@@ -71,6 +64,13 @@ export const startMediaConvert = new sst.aws.Function("StartMediaConvert", {
     {
       actions: ["iam:PassRole"],
       resources: [process.env.MEDIACONVERT_ROLE_ARN ?? "*"],
+    },
+    {
+      actions: [
+        "transcribe:StartTranscriptionJob",
+        "transcribe:GetTranscriptionJob",
+      ],
+      resources: ["*"],
     },
     {
       actions: ["s3:GetObject", "s3:PutObject"],
@@ -84,62 +84,11 @@ export const startMediaConvert = new sst.aws.Function("StartMediaConvert", {
   },
 });
 
-// Start Transcribe - initiates transcription
-export const startTranscribe = new sst.aws.Function("StartTranscribe", {
-  name: `narrows-${$app.stage}-start-transcribe`,
-  handler: "packages/functions/src/start-transcribe/handler.main",
-  runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
-  permissions: [
-    {
-      actions: [
-        "transcribe:StartTranscriptionJob",
-        "transcribe:GetTranscriptionJob",
-      ],
-      resources: ["*"],
-    },
-    {
-      actions: ["s3:GetObject", "s3:PutObject"],
-      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
-    },
-  ],
-  environment: commonEnv,
-});
-
-// Subscribe both processing functions to processing queue
-processingQueue.subscribe(startMediaConvert.arn);
-processingQueue.subscribe(startTranscribe.arn);
-
-// On MediaConvert Complete - handles MediaConvert completion events
-export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {
-  name: `narrows-${$app.stage}-on-media-convert-complete`,
-  handler: "packages/functions/src/on-media-convert-complete/handler.main",
-  runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
-  environment: commonEnv,
-});
-
-// On Transcribe Complete - handles Transcribe completion events
-export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete", {
-  name: `narrows-${$app.stage}-on-transcribe-complete`,
-  handler: "packages/functions/src/on-transcribe-complete/handler.main",
-  runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
-  environment: {
-    ...commonEnv,
-    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
-  },
-});
-
 // Ingest Transcript - chunks and sends to Graphiti
-export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
-  name: `narrows-${$app.stage}-ingest-transcript`,
+transcriptIngestQueue.subscribe({
   handler: "packages/functions/src/ingest-transcript/handler.main",
   runtime: "nodejs20.x",
-  timeout: "10 minutes", // AI processing can take time
+  timeout: "10 minutes",
   memory: "1024 MB",
   permissions: [
     {
@@ -155,26 +104,19 @@ export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
   },
 });
 
-// Subscribe to transcript ingest queue
-transcriptIngestQueue.subscribe(ingestTranscript.arn);
-
-// EventBridge rules for completion events
-// MediaConvert job state change rule
-new sst.aws.Function("MediaConvertEventHandler", {
-  name: `narrows-${$app.stage}-mediaconvert-event-handler`,
+// On MediaConvert Complete - handles MediaConvert completion events
+// This function is triggered by EventBridge (configured separately)
+export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {
   handler: "packages/functions/src/on-media-convert-complete/handler.main",
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
   environment: commonEnv,
-}).nodes.function.addEventSource(
-  // This will be set up via CloudFormation/Terraform for default EventBridge bus
-  // with pattern matching for MediaConvert job state changes
-);
+});
 
-// Transcribe job state change rule  
-new sst.aws.Function("TranscribeEventHandler", {
-  name: `narrows-${$app.stage}-transcribe-event-handler`,
+// On Transcribe Complete - handles Transcribe completion events
+// This function is triggered by EventBridge (configured separately)
+export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete", {
   handler: "packages/functions/src/on-transcribe-complete/handler.main",
   runtime: "nodejs20.x",
   timeout: "1 minute",
@@ -183,7 +125,17 @@ new sst.aws.Function("TranscribeEventHandler", {
     ...commonEnv,
     TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
   },
-}).nodes.function.addEventSource(
-  // This will be set up via CloudFormation/Terraform for default EventBridge bus
-  // with pattern matching for Transcribe job state changes
-);
+  link: [transcriptIngestQueue],
+  permissions: [
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [transcriptIngestQueue.arn],
+    },
+  ],
+});
+
+// Export the Lambda ARNs for EventBridge rule setup
+export const lambdaArns = {
+  onMediaConvertComplete: onMediaConvertComplete.arn,
+  onTranscribeComplete: onTranscribeComplete.arn,
+};
