@@ -14,9 +14,21 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "DownloadImage": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "FetchRss": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "ImageDownloadQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "ImageProcessingQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
     }
     "IngestTranscript": {
       "name": string
@@ -30,8 +42,17 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "ProcessImage": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "ProcessingQueue": {
       "type": "sst.aws.Queue"
+      "url": string
+    }
+    "ResizeImage": {
+      "name": string
+      "type": "sst.aws.Function"
       "url": string
     }
     "RssRefreshQueue": {

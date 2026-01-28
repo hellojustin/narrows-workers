@@ -12,6 +12,7 @@ const parser = new Parser({
       ["itunes:episodeType", "itunesEpisodeType"],
       ["itunes:explicit", "itunesExplicit"],
       ["itunes:image", "itunesImage", { keepArray: false }],
+      ["itunes:author", "itunesAuthor"],
     ],
     feed: [
       ["itunes:author", "itunesAuthor"],
@@ -19,7 +20,12 @@ const parser = new Parser({
       ["itunes:image", "itunesImage", { keepArray: false }],
       ["itunes:explicit", "itunesExplicit"],
       ["itunes:category", "itunesCategories", { keepArray: true }],
+      ["itunes:type", "itunesType"],
+      ["itunes:subtitle", "itunesSubtitle"],
+      ["itunes:summary", "itunesSummary"],
       ["language", "language"],
+      ["copyright", "copyright"],
+      ["lastBuildDate", "lastBuildDate"],
     ],
   },
 });
@@ -29,6 +35,8 @@ interface SeriesData {
   rssUrl: string;
   episodeCutoffDate: string;
   title?: string;
+  imageUrl?: string;
+  imageMediaId?: string | null;
 }
 
 interface RssRefreshMessage {
@@ -86,24 +94,82 @@ async function fetchSeries(seriesId: string): Promise<SeriesData | null> {
 }
 
 /**
- * Update series with feed metadata
+ * Extract owner info from iTunes owner structure
+ */
+function extractOwner(owner: unknown): { name?: string; email?: string } {
+  if (!owner || typeof owner !== "object") return {};
+  const ownerObj = owner as {
+    "itunes:name"?: string | string[];
+    "itunes:email"?: string | string[];
+  };
+  const getName = (val: string | string[] | undefined): string | undefined => {
+    if (Array.isArray(val)) return val[0];
+    return val;
+  };
+  return {
+    name: getName(ownerObj["itunes:name"]),
+    email: getName(ownerObj["itunes:email"]),
+  };
+}
+
+/**
+ * Extract categories from iTunes category structure (supports nested categories)
+ */
+function extractCategories(itunesCategories: unknown[] | undefined): string[] {
+  const categories: string[] = [];
+  if (!itunesCategories || !Array.isArray(itunesCategories)) return categories;
+
+  for (const cat of itunesCategories) {
+    if (typeof cat === "string") {
+      categories.push(cat);
+    } else if (typeof cat === "object" && cat !== null) {
+      const catObj = cat as {
+        $?: { text?: string };
+        _?: string;
+        "itunes:category"?: unknown[];
+      };
+      if (catObj.$?.text) {
+        categories.push(catObj.$.text);
+      } else if (catObj._) {
+        categories.push(catObj._);
+      }
+      // Get nested subcategories
+      if (catObj["itunes:category"]) {
+        const subCategories = extractCategories(catObj["itunes:category"]);
+        categories.push(...subCategories);
+      }
+    }
+  }
+  return categories;
+}
+
+/**
+ * Update series with ALL feed metadata
  */
 async function updateSeriesFromFeed(
   seriesId: string,
   feedData: {
     title?: string;
     description?: string;
+    subtitle?: string;
     author?: string;
+    ownerName?: string;
+    ownerEmail?: string;
     language?: string;
     imageUrl?: string;
+    websiteUrl?: string;
     categories?: string[];
     explicit?: boolean;
+    copyright?: string;
+    seriesType?: string;
+    lastBuildDate?: string;
+    lastFetchedAt?: string;
   }
 ): Promise<void> {
   const apiUrl = process.env.NARROWS_API_URL;
   const apiKey = process.env.NARROWS_API_KEY;
 
-  await fetch(`${apiUrl}/api/v1/series/${seriesId}`, {
+  const response = await fetch(`${apiUrl}/api/v1/series/${seriesId}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -111,11 +177,15 @@ async function updateSeriesFromFeed(
     },
     body: JSON.stringify(feedData),
   });
+
+  if (!response.ok) {
+    console.warn(`Failed to update series ${seriesId}: ${response.statusText}`);
+  }
 }
 
 /**
  * Create or update episode via Narrows API
- * Returns the existing episode's processingStatus if it already exists
+ * Returns the existing episode's processingStatus and imageMediaId
  */
 async function upsertEpisode(
   seriesId: string,
@@ -135,7 +205,7 @@ async function upsertEpisode(
     episodeType?: string;
     explicit?: boolean;
   }
-): Promise<{ id: string; created: boolean; processingStatus: string }> {
+): Promise<{ id: string; created: boolean; processingStatus: string; imageMediaId: string | null }> {
   const apiUrl = process.env.NARROWS_API_URL;
   const apiKey = process.env.NARROWS_API_KEY;
 
@@ -152,6 +222,7 @@ async function upsertEpisode(
   let episodeId: string;
   let created = false;
   let processingStatus = "pending";
+  let imageMediaId: string | null = null;
 
   if (searchResponse.ok) {
     const { data } = await searchResponse.json();
@@ -160,6 +231,7 @@ async function upsertEpisode(
       // Only update metadata fields (title, description, etc.)
       episodeId = data[0].id;
       processingStatus = data[0].processingStatus || "pending";
+      imageMediaId = data[0].imageMediaId || null;
       
       // Update metadata only (exclude processingStatus to preserve existing state)
       const { ...metadataOnly } = episodeData;
@@ -188,12 +260,13 @@ async function upsertEpisode(
       episodeId = result.data.id;
       created = true;
       processingStatus = "pending";
+      imageMediaId = null;
     }
   } else {
     throw new Error(`Failed to search episodes: ${searchResponse.statusText}`);
   }
 
-  return { id: episodeId, created, processingStatus };
+  return { id: episodeId, created, processingStatus, imageMediaId };
 }
 
 /**
@@ -209,6 +282,28 @@ async function enqueueAudioDownload(episodeId: string): Promise<void> {
     new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: JSON.stringify({ episodeId }),
+    })
+  );
+}
+
+/**
+ * Enqueue image for download (series or episode artwork)
+ */
+async function enqueueImageDownload(
+  type: "series" | "episode",
+  id: string,
+  imageUrl: string
+): Promise<void> {
+  const queueUrl = process.env.IMAGE_DOWNLOAD_QUEUE_URL;
+  if (!queueUrl) {
+    console.warn("IMAGE_DOWNLOAD_QUEUE_URL not configured, skipping image download");
+    return;
+  }
+
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({ type, id, imageUrl }),
     })
   );
 }
@@ -247,16 +342,38 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       const feed = await parser.parseURL(series.rssUrl);
       console.log(`Found ${feed.items.length} items in feed`);
 
-      // 3. Update series metadata from feed
+      // 3. Update series metadata from feed with ALL available fields
       const itunesImage = feed.itunesImage as { href?: string } | undefined;
+      const owner = extractOwner(feed.itunesOwner);
+      const categories = extractCategories(feed.itunesCategories as unknown[] | undefined);
+      const itunesType = feed.itunesType as string | undefined;
+      const seriesType = itunesType === "serial" ? "serial" : "episodic";
+
+      const seriesImageUrl = itunesImage?.href || feed.image?.url;
       await updateSeriesFromFeed(seriesId, {
         title: feed.title || series.title,
-        description: feed.description,
+        description: feed.description || (feed.itunesSummary as string | undefined),
+        subtitle: feed.itunesSubtitle as string | undefined,
         author: feed.itunesAuthor as string | undefined,
+        ownerName: owner.name,
+        ownerEmail: owner.email,
         language: feed.language as string | undefined,
-        imageUrl: itunesImage?.href || feed.image?.url,
-        explicit: (feed.itunesExplicit as string) === "yes",
+        imageUrl: seriesImageUrl,
+        websiteUrl: feed.link,
+        categories: categories.length > 0 ? categories : undefined,
+        explicit: (feed.itunesExplicit as string) === "yes" || 
+                  (feed.itunesExplicit as string) === "true",
+        copyright: feed.copyright as string | undefined,
+        seriesType,
+        lastBuildDate: feed.lastBuildDate as string | undefined,
+        lastFetchedAt: new Date().toISOString(),
       });
+
+      // 3.5. Enqueue series image download if needed
+      if (seriesImageUrl && !series.imageMediaId) {
+        await enqueueImageDownload("series", seriesId, seriesImageUrl);
+        console.log(`Enqueued series image download: ${seriesImageUrl}`);
+      }
 
       // 4. Process episodes
       const cutoffDate = new Date(series.episodeCutoffDate);
@@ -295,22 +412,29 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         };
 
         // Create or update episode (preserves existing processingStatus)
-        const { id: episodeId, created, processingStatus } = await upsertEpisode(seriesId, episodeData);
+        const { id: episodeId, created, processingStatus, imageMediaId: episodeImageMediaId } = await upsertEpisode(seriesId, episodeData);
         processedCount++;
 
-        // Enqueue for download if:
+        // Enqueue for audio download if:
         // 1. Newly created episode with an enclosure URL, OR
         // 2. Existing episode still in 'pending' status (not yet processed)
-        const shouldEnqueue = enclosure?.url && (created || processingStatus === "pending");
-        if (shouldEnqueue) {
+        const shouldEnqueueAudio = enclosure?.url && (created || processingStatus === "pending");
+        if (shouldEnqueueAudio) {
           await enqueueAudioDownload(episodeId);
           enqueuedCount++;
           console.log(`Enqueued episode "${item.title}" for audio download (created: ${created}, status: ${processingStatus})`);
         }
+
+        // Enqueue for image download if episode has an image URL but no imageMediaId
+        const episodeImageUrl = itunesImage?.href;
+        if (episodeImageUrl && !episodeImageMediaId) {
+          await enqueueImageDownload("episode", episodeId, episodeImageUrl);
+          console.log(`Enqueued episode "${item.title}" for image download`);
+        }
       }
 
       console.log(
-        `Processed ${processedCount} episodes, enqueued ${enqueuedCount} for download`
+        `Processed ${processedCount} episodes, enqueued ${enqueuedCount} for audio download`
       );
     } catch (error) {
       console.error(`Error processing series ${seriesId}:`, error);

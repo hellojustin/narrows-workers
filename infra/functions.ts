@@ -6,6 +6,8 @@ import { mediaBucketName } from "./storage";
 import {
   rssRefreshQueue,
   audioDownloadQueue,
+  imageDownloadQueue,
+  imageProcessingQueue,
   processingQueue,
   transcriptIngestQueue,
 } from "./queues";
@@ -41,14 +43,15 @@ export const fetchRss = new sst.aws.Function("FetchRss", {
     },
     {
       actions: ["sqs:SendMessage"],
-      resources: [audioDownloadQueue.arn],
+      resources: [audioDownloadQueue.arn, imageDownloadQueue.arn],
     },
   ],
   environment: {
     ...commonEnv,
     AUDIO_DOWNLOAD_QUEUE_URL: audioDownloadQueue.url,
+    IMAGE_DOWNLOAD_QUEUE_URL: imageDownloadQueue.url,
   },
-  link: [audioDownloadQueue],
+  link: [audioDownloadQueue, imageDownloadQueue],
 });
 rssRefreshQueue.subscribe(fetchRss.arn);
 
@@ -80,6 +83,60 @@ export const downloadAudio = new sst.aws.Function("DownloadAudio", {
   link: [processingQueue],
 });
 audioDownloadQueue.subscribe(downloadAudio.arn);
+
+// Download Image - downloads series/episode artwork to S3
+export const downloadImage = new sst.aws.Function("DownloadImage", {
+  name: `narrows-${$app.stage}-download-image`,
+  handler: "packages/functions/src/download-image/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "5 minutes",
+  memory: "512 MB",
+  permissions: [
+    {
+      actions: ["s3:PutObject", "s3:GetObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [imageDownloadQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [imageProcessingQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    IMAGE_PROCESSING_QUEUE_URL: imageProcessingQueue.url,
+  },
+  link: [imageProcessingQueue],
+});
+imageDownloadQueue.subscribe(downloadImage.arn);
+
+// Process Image - converts images to base.png and base.jpg formats
+// Uses sharp which requires platform-specific installation for Lambda
+export const processImage = new sst.aws.Function("ProcessImage", {
+  name: `narrows-${$app.stage}-process-image`,
+  handler: "packages/functions/src/process-image/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "5 minutes",
+  memory: "1024 MB", // Image processing needs more memory
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [imageProcessingQueue.arn],
+    },
+  ],
+  environment: commonEnv,
+  nodejs: {
+    install: ["sharp"], // Install sharp for Lambda (Linux) platform
+  },
+});
+imageProcessingQueue.subscribe(processImage.arn);
 
 // Start Processing - initiates both MediaConvert and Transcribe in parallel
 export const startProcessing = new sst.aws.Function("StartProcessing", {
@@ -179,6 +236,30 @@ export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete",
       resources: [transcriptIngestQueue.arn],
     },
   ],
+});
+
+// Resize Image - on-demand image resizing for CloudFront
+// This Lambda provides a Function URL that CloudFront can call for /image/* requests
+// Uses sharp which requires platform-specific installation for Lambda
+export const resizeImage = new sst.aws.Function("ResizeImage", {
+  name: `narrows-${$app.stage}-resize-image`,
+  handler: "packages/functions/src/resize-image/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "30 seconds",
+  memory: "1024 MB", // Image processing needs memory
+  url: {
+    authorization: "none", // Public access for CloudFront (no IAM auth required)
+  },
+  permissions: [
+    {
+      actions: ["s3:GetObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+  ],
+  environment: commonEnv,
+  nodejs: {
+    install: ["sharp"], // Install sharp for Lambda (Linux) platform
+  },
 });
 
 // Export the Lambda ARNs for EventBridge rule setup
