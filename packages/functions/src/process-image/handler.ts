@@ -1,6 +1,7 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import sharp from "sharp";
+import { Vibrant } from "node-vibrant/node";
 
 const s3Client = new S3Client({});
 
@@ -8,6 +9,12 @@ interface ImageProcessingMessage {
   mediaId: string;
   type: "series" | "episode";
   entityId: string;
+}
+
+interface ColorPalette {
+  primaryColor: string | null;
+  backgroundColor: string | null;
+  secondaryColor: string | null;
 }
 
 /**
@@ -30,6 +37,87 @@ async function updateMediaRecord(
     },
     body: JSON.stringify(updates),
   });
+}
+
+/**
+ * Extract dominant colors from image using Vibrant
+ */
+async function extractColors(imageBuffer: Buffer): Promise<ColorPalette> {
+  try {
+    const palette = await Vibrant.from(imageBuffer).getPalette();
+    
+    // Convert Vibrant swatch to hex color
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const toHex = (swatch: any): string | null => {
+      if (!swatch) return null;
+      return swatch.hex;
+    };
+
+    // Map Vibrant swatches to our color scheme:
+    // - primaryColor: Vibrant (most saturated, eye-catching color)
+    // - backgroundColor: DarkMuted or LightMuted (good for backgrounds)
+    // - secondaryColor: Muted (complementary accent)
+    const primaryColor = toHex(palette.Vibrant) || toHex(palette.LightVibrant) || toHex(palette.DarkVibrant);
+    const backgroundColor = toHex(palette.DarkMuted) || toHex(palette.LightMuted) || toHex(palette.Muted);
+    const secondaryColor = toHex(palette.Muted) || toHex(palette.LightVibrant) || toHex(palette.DarkVibrant);
+
+    console.log(`Extracted colors: primary=${primaryColor}, background=${backgroundColor}, secondary=${secondaryColor}`);
+
+    return {
+      primaryColor,
+      backgroundColor,
+      secondaryColor,
+    };
+  } catch (error) {
+    console.error("Error extracting colors:", error);
+    return {
+      primaryColor: null,
+      backgroundColor: null,
+      secondaryColor: null,
+    };
+  }
+}
+
+/**
+ * Update series with color palette
+ */
+async function updateSeriesColors(seriesId: string, colors: ColorPalette): Promise<void> {
+  const apiUrl = process.env.NARROWS_API_URL;
+  const apiKey = process.env.NARROWS_API_KEY;
+
+  const response = await fetch(`${apiUrl}/api/v1/series/${seriesId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(colors),
+  });
+
+  if (!response.ok) {
+    console.error(`Failed to update series colors: ${response.statusText}`);
+  }
+}
+
+/**
+ * Update episode with color palette
+ */
+async function updateEpisodeColors(episodeId: string, colors: ColorPalette): Promise<void> {
+  const apiUrl = process.env.NARROWS_API_URL;
+  const apiKey = process.env.NARROWS_API_KEY;
+
+  const response = await fetch(`${apiUrl}/api/v1/episodes/${episodeId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(colors),
+  });
+
+  if (!response.ok) {
+    console.error(`Failed to update episode colors: ${response.statusText}`);
+  }
 }
 
 /**
@@ -132,7 +220,21 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       console.log(`Uploading base.jpg (${jpgBuffer.length} bytes)...`);
       await uploadToS3(bucketName, `${processedPrefix}/base.jpg`, jpgBuffer, "image/jpeg");
 
-      // 6. Update media record with processed timestamp
+      // 6. Extract dominant colors from image
+      console.log("Extracting color palette...");
+      const colors = await extractColors(rawImageBuffer);
+
+      // 7. Update series or episode with colors
+      if (colors.primaryColor || colors.backgroundColor || colors.secondaryColor) {
+        console.log(`Updating ${type} ${entityId} with colors...`);
+        if (type === "series") {
+          await updateSeriesColors(entityId, colors);
+        } else {
+          await updateEpisodeColors(entityId, colors);
+        }
+      }
+
+      // 8. Update media record with processed timestamp
       await updateMediaRecord(mediaId, {
         processedAt: new Date().toISOString(),
       });

@@ -133,7 +133,7 @@ export const processImage = new sst.aws.Function("ProcessImage", {
   ],
   environment: commonEnv,
   nodejs: {
-    install: ["sharp"], // Install sharp for Lambda (Linux) platform
+    install: ["sharp", "node-vibrant"], // Install native modules for Lambda (Linux) platform
   },
 });
 imageProcessingQueue.subscribe(processImage.arn);
