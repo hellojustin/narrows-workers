@@ -115,6 +115,7 @@ async function updateSeriesFromFeed(
 
 /**
  * Create or update episode via Narrows API
+ * Returns the existing episode's processingStatus if it already exists
  */
 async function upsertEpisode(
   seriesId: string,
@@ -133,9 +134,8 @@ async function upsertEpisode(
     seasonNumber?: number;
     episodeType?: string;
     explicit?: boolean;
-    processingStatus: string;
   }
-): Promise<{ id: string; created: boolean }> {
+): Promise<{ id: string; created: boolean; processingStatus: string }> {
   const apiUrl = process.env.NARROWS_API_URL;
   const apiKey = process.env.NARROWS_API_KEY;
 
@@ -151,39 +151,49 @@ async function upsertEpisode(
 
   let episodeId: string;
   let created = false;
+  let processingStatus = "pending";
 
   if (searchResponse.ok) {
     const { data } = await searchResponse.json();
     if (data && data.length > 0) {
-      // Update existing episode
+      // Episode already exists - DO NOT update processingStatus
+      // Only update metadata fields (title, description, etc.)
       episodeId = data[0].id;
+      processingStatus = data[0].processingStatus || "pending";
+      
+      // Update metadata only (exclude processingStatus to preserve existing state)
+      const { ...metadataOnly } = episodeData;
       await fetch(`${apiUrl}/api/v1/episodes/${episodeId}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(episodeData),
+        body: JSON.stringify(metadataOnly),
       });
     } else {
-      // Create new episode
+      // Create new episode with pending status
       const createResponse = await fetch(`${apiUrl}/api/v1/series/${seriesId}/episodes`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(episodeData),
+        body: JSON.stringify({
+          ...episodeData,
+          processingStatus: "pending",
+        }),
       });
       const result = await createResponse.json();
       episodeId = result.data.id;
       created = true;
+      processingStatus = "pending";
     }
   } else {
     throw new Error(`Failed to search episodes: ${searchResponse.statusText}`);
   }
 
-  return { id: episodeId, created };
+  return { id: episodeId, created, processingStatus };
 }
 
 /**
@@ -266,7 +276,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         const enclosure = item.enclosure;
         const itunesImage = item.itunesImage as { href?: string } | undefined;
 
-        // Prepare episode data
+        // Prepare episode data (without processingStatus - that's managed separately)
         const episodeData = {
           guid: item.guid || item.link || item.title || "",
           title: item.title || "Untitled Episode",
@@ -282,18 +292,20 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           seasonNumber: item.itunesSeason ? parseInt(item.itunesSeason as string, 10) : undefined,
           episodeType: (item.itunesEpisodeType as string) || "full",
           explicit: (item.itunesExplicit as string) === "yes",
-          processingStatus: "pending" as const,
         };
 
-        // Create or update episode
-        const { id: episodeId, created } = await upsertEpisode(seriesId, episodeData);
+        // Create or update episode (preserves existing processingStatus)
+        const { id: episodeId, created, processingStatus } = await upsertEpisode(seriesId, episodeData);
         processedCount++;
 
-        // Only enqueue for download if newly created or needs reprocessing
-        if (created && enclosure?.url) {
+        // Enqueue for download if:
+        // 1. Newly created episode with an enclosure URL, OR
+        // 2. Existing episode still in 'pending' status (not yet processed)
+        const shouldEnqueue = enclosure?.url && (created || processingStatus === "pending");
+        if (shouldEnqueue) {
           await enqueueAudioDownload(episodeId);
           enqueuedCount++;
-          console.log(`Enqueued episode "${item.title}" for audio download`);
+          console.log(`Enqueued episode "${item.title}" for audio download (created: ${created}, status: ${processingStatus})`);
         }
       }
 
