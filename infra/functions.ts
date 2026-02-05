@@ -179,13 +179,14 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
 });
 processingQueue.subscribe(startProcessing.arn);
 
-// Ingest Transcript - chunks and sends to Graphiti
+// Process Transcript - identifies speakers, chapters, segments and sends to Graphiti
 // Runs in VPC to access internal Graphiti service
-export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
-  name: `narrows-${$app.stage}-ingest-transcript`,
-  handler: "packages/functions/src/ingest-transcript/handler.main",
+// (Previously named ingest-transcript)
+export const processTranscript = new sst.aws.Function("ProcessTranscript", {
+  name: `narrows-${$app.stage}-process-transcript`,
+  handler: "packages/functions/src/process-transcript/handler.main",
   runtime: "nodejs20.x",
-  timeout: "10 minutes",
+  timeout: "15 minutes", // Increased for LLM processing
   memory: "1024 MB",
   vpc: vpcConfig,
   permissions: [
@@ -206,7 +207,7 @@ export const ingestTranscript = new sst.aws.Function("IngestTranscript", {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
   },
 });
-transcriptIngestQueue.subscribe(ingestTranscript.arn);
+transcriptIngestQueue.subscribe(processTranscript.arn);
 
 // On MediaConvert Complete - handles MediaConvert completion events
 export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {

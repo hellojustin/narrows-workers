@@ -35,5 +35,5 @@ export const processingQueue = new sst.aws.Queue("ProcessingQueue", {
 // Queue for ingesting transcripts into Graphiti
 export const transcriptIngestQueue = new sst.aws.Queue("TranscriptIngestQueue", {
   fifo: false,
-  visibilityTimeout: "10 minutes", // AI processing can take time
+  visibilityTimeout: "16 minutes", // Must be >= Lambda timeout (15 min) + buffer
 });

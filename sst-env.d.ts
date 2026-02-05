@@ -30,10 +30,6 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
-    "IngestTranscript": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
     "OnMediaConvertComplete": {
       "name": string
       "type": "sst.aws.Function"
@@ -43,6 +39,10 @@ declare module "sst" {
       "type": "sst.aws.Function"
     }
     "ProcessImage": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "ProcessTranscript": {
       "name": string
       "type": "sst.aws.Function"
     }
