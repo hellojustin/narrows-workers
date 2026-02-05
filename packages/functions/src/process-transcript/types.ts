@@ -8,7 +8,11 @@ export interface TranscriptSegment {
   end_time: string;
   transcript: string;
   speaker_label: string;
+  items?: number[]; // Word-level indices from AWS Transcribe (excluded from Graphiti)
 }
+
+/** TranscriptSegment without the 'items' array (for Graphiti metadata) */
+export type CleanTranscriptSegment = Omit<TranscriptSegment, 'items'>;
 
 export interface TranscriptResult {
   results: {

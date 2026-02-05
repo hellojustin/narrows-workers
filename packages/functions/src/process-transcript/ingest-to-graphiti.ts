@@ -6,7 +6,14 @@
  */
 
 import OpenAI from 'openai';
-import type { SeriesData, EpisodeData, Segment, SpeakerData, TranscriptSegment } from './types';
+import type {
+  SeriesData,
+  EpisodeData,
+  Segment,
+  SpeakerData,
+  TranscriptSegment,
+  CleanTranscriptSegment,
+} from './types';
 
 const MAX_DATA_CHARS = 5000;
 
@@ -92,11 +99,64 @@ function getAudioSegmentsInRange(
 }
 
 /**
- * Convert transcript segments to plain text
+ * Convert transcript segments to plain text (without speaker names)
  */
 function transcriptToText(segments: TranscriptSegment[]): string {
   return segments.map((seg) => seg.transcript).join(' ');
 }
+
+/**
+ * Convert transcript segments to text with speaker names
+ */
+function transcriptToTextWithSpeakers(
+  segments: TranscriptSegment[],
+  speakerData: SpeakerData
+): string {
+  return segments
+    .map((seg) => {
+      const speakerName = speakerData[seg.speaker_label]?.name || seg.speaker_label;
+      return `[${speakerName}] ${seg.transcript}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Clean audio segments for metadata (remove 'items' array)
+ */
+function cleanAudioSegments(segments: TranscriptSegment[]): CleanTranscriptSegment[] {
+  return segments.map(({ id, start_time, end_time, transcript, speaker_label }) => ({
+    id,
+    start_time,
+    end_time,
+    transcript,
+    speaker_label,
+  }));
+}
+
+/**
+ * Get actual time range from audio segments
+ */
+function getActualTimeRange(segments: TranscriptSegment[]): { startSec: number; endSec: number } {
+  if (segments.length === 0) {
+    return { startSec: 0, endSec: 0 };
+  }
+  const startSec = parseFloat(segments[0].start_time);
+  const endSec = parseFloat(segments[segments.length - 1].end_time);
+  return { startSec, endSec };
+}
+
+/**
+ * Ellipsize a string to max length
+ */
+function ellipsize(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1) + '…';
+}
+
+/**
+ * Segment types that should be saved to Narrows but NOT ingested to Graphiti
+ */
+const SKIP_GRAPHITI_TYPES = new Set(['promotion', 'credits', 'sound-only']);
 
 /**
  * Send a segment to Graphiti API
@@ -106,7 +166,9 @@ async function sendToGraphiti(
   segment: Segment,
   series: SeriesData,
   episode: EpisodeData,
-  audioSegments: TranscriptSegment[]
+  audioSegments: TranscriptSegment[],
+  actualStartSec: number,
+  actualEndSec: number
 ): Promise<string> {
   const graphitiUrl = process.env.GRAPHITI_API_URL;
   const graphitiKey = process.env.GRAPHITI_API_KEY;
@@ -127,15 +189,26 @@ async function sendToGraphiti(
     headers['Authorization'] = `Bearer ${graphitiKey}`;
   }
 
+  // Format timestamps for display
+  const startTs = formatTimestamp(actualStartSec);
+  const endTs = formatTimestamp(actualEndSec);
+
+  // Generate name: "{series[12 chars]} - {episode[15 chars]} - {start}-{end}"
+  const name = `${ellipsize(series.title, 12)} - ${ellipsize(episode.title, 15)} - ${startTs}-${endTs}`;
+
+  // Clean audio segments (remove 'items' array)
+  const cleanedAudioSegments = cleanAudioSegments(audioSegments);
+
   const response = await fetch(`${graphitiUrl}/data`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       type: 'json',
       data,
+      name,
       group_id: graphId,
       created_at: episode.publishedAt || new Date().toISOString(),
-      source_description: `${series.title}, ${episode.title}, segment ${segment.id}, ${formatTimestamp(segment.episodeStartSec)} - ${formatTimestamp(segment.episodeEndSec)}`,
+      source_description: `${series.title}, ${episode.title}, segment ${segment.id}, ${startTs} - ${endTs}`,
       metadata: {
         // Series/Episode info
         series_id: series.id,
@@ -146,16 +219,17 @@ async function sendToGraphiti(
         segment_id: segment.id,
         segment_type: segment.type,
         chapter_id: segment.chapterId,
-        episode_start_sec: segment.episodeStartSec,
-        episode_end_sec: segment.episodeEndSec,
+        // Use actual transcript timestamps
+        episode_start_sec: actualStartSec,
+        episode_end_sec: actualEndSec,
         // Segment metrics
         lucidity: segment.lucidity,
         polarity: segment.polarity,
         arousal: segment.arousal,
         subjectivity: segment.subjectivity,
         humor: segment.humor,
-        // Raw transcript segments (structured JSON)
-        audio_segments: audioSegments,
+        // Raw transcript segments (cleaned, without 'items')
+        audio_segments: cleanedAudioSegments,
       },
     }),
   });
@@ -225,9 +299,19 @@ export async function ingestSegmentsToGraphiti(
 ): Promise<string[]> {
   const graphitiIds: string[] = [];
 
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    console.log(`Ingesting segment ${i + 1}/${segments.length} (${segment.type})`);
+  // Filter out segments that should not be ingested to Graphiti
+  const segmentsToIngest = segments.filter((seg) => !SKIP_GRAPHITI_TYPES.has(seg.type));
+  const skippedCount = segments.length - segmentsToIngest.length;
+
+  if (skippedCount > 0) {
+    console.log(
+      `Skipping ${skippedCount} segments (promotion/credits/sound-only) for Graphiti ingestion`
+    );
+  }
+
+  for (let i = 0; i < segmentsToIngest.length; i++) {
+    const segment = segmentsToIngest[i];
+    console.log(`Ingesting segment ${i + 1}/${segmentsToIngest.length} (${segment.type})`);
 
     try {
       // Get the relevant audio segments for this time range
@@ -237,20 +321,25 @@ export async function ingestSegmentsToGraphiti(
         segment.episodeEndSec
       );
 
-      // Convert to plain text for context generation and content
-      const transcriptText = transcriptToText(relevantAudioSegments);
+      // Get actual timestamps from the audio segments
+      const { startSec: actualStartSec, endSec: actualEndSec } =
+        getActualTimeRange(relevantAudioSegments);
 
-      // Generate contextual retrieval description
+      // Convert to text with speaker names for the content
+      const transcriptText = transcriptToTextWithSpeakers(relevantAudioSegments, speakerData);
+
+      // Generate contextual retrieval description (using plain text for LLM)
+      const plainText = transcriptToText(relevantAudioSegments);
       const context = await generateContextualRetrieval(
         openai,
         segment,
         series,
         episode,
         speakerData,
-        transcriptText
+        plainText
       );
 
-      // Format data with contextual retrieval format
+      // Format data with contextual retrieval format (includes speaker names)
       const formattedData = `<document>
 <context>${context}</context>
 <transcript>
@@ -278,7 +367,9 @@ ${transcriptText}
           chunkSegment,
           series,
           episode,
-          chunkAudioSegments
+          chunkAudioSegments,
+          actualStartSec,
+          actualEndSec
         );
         graphitiIds.push(graphitiId);
 
@@ -293,7 +384,7 @@ ${transcriptText}
     }
 
     // Rate limiting delay between segments
-    if (i < segments.length - 1) {
+    if (i < segmentsToIngest.length - 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
