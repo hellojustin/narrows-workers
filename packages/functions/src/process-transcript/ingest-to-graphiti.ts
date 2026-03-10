@@ -159,6 +159,14 @@ function ellipsize(str: string, maxLen: number): string {
 const SKIP_GRAPHITI_TYPES = new Set(['promotion', 'credits', 'sound-only']);
 
 /**
+ * Chunk information for segments that were split due to size
+ */
+interface ChunkInfo {
+  chunk_seq: number | null;
+  chunk_total: number | null;
+}
+
+/**
  * Send a segment to Graphiti API
  */
 async function sendToGraphiti(
@@ -168,7 +176,8 @@ async function sendToGraphiti(
   episode: EpisodeData,
   audioSegments: TranscriptSegment[],
   actualStartSec: number,
-  actualEndSec: number
+  actualEndSec: number,
+  chunkInfo: ChunkInfo = { chunk_seq: null, chunk_total: null }
 ): Promise<string> {
   const graphitiUrl = process.env.GRAPHITI_API_URL;
   const graphitiKey = process.env.GRAPHITI_API_KEY;
@@ -219,6 +228,9 @@ async function sendToGraphiti(
         segment_id: segment.id,
         segment_type: segment.type,
         chapter_id: segment.chapterId,
+        // Chunk info (for segments split due to size)
+        chunk_seq: chunkInfo.chunk_seq,
+        chunk_total: chunkInfo.chunk_total,
         // Use actual transcript timestamps
         episode_start_sec: actualStartSec,
         episode_end_sec: actualEndSec,
@@ -353,23 +365,29 @@ ${transcriptText}
       for (let j = 0; j < dataChunks.length; j++) {
         const chunk = dataChunks[j];
 
-        // Create a modified segment for tracking
-        const chunkSegment = {
-          ...segment,
-          id: dataChunks.length > 1 ? `${segment.id}-chunk-${j}` : segment.id,
-        };
+        // Log chunk info for debugging
+        if (dataChunks.length > 1) {
+          console.log(`Processing chunk ${j + 1}/${dataChunks.length} for segment ${segment.id}`);
+        }
 
         // For chunks, we include the full audio segments in metadata only on the first chunk
         const chunkAudioSegments = j === 0 ? relevantAudioSegments : [];
 
+        // Chunk metadata (null if not chunked)
+        const chunkInfo = dataChunks.length > 1 
+          ? { chunk_seq: j, chunk_total: dataChunks.length }
+          : { chunk_seq: null, chunk_total: null };
+
+        // Always pass the original segment - segment_id in Graphiti must match Narrows DB
         const graphitiId = await sendToGraphiti(
           chunk,
-          chunkSegment,
+          segment,  // Use original segment, not a modified chunk version
           series,
           episode,
           chunkAudioSegments,
           actualStartSec,
-          actualEndSec
+          actualEndSec,
+          chunkInfo
         );
         graphitiIds.push(graphitiId);
 
