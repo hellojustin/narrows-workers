@@ -4,7 +4,7 @@ set -e
 GRAPHITI_URL="http://graphiti.production.audiopond.net"
 
 echo "=== Getting pending jobs ==="
-curl -s "${GRAPHITI_URL}/jobs?status=pending&limit=500" | jq -r '.jobs[].id' > /tmp/pending_jobs.txt
+curl -s "${GRAPHITI_URL}/jobs?status=pending&page_size=500" | jq -r '.jobs[].id' > /tmp/pending_jobs.txt
 
 count=$(wc -l < /tmp/pending_jobs.txt | tr -d ' ')
 echo "Found $count pending jobs to cancel"

@@ -54,19 +54,19 @@ echo "--- Step 1: Canceling Graphiti Jobs ---"
 
 # Get pending jobs
 echo "Fetching pending jobs..."
-PENDING_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs?status=pending&limit=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
+PENDING_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs?status=pending&page_size=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
 PENDING_COUNT=$(echo "$PENDING_JOBS" | grep -c . 2>/dev/null || echo "0")
 echo "Found $PENDING_COUNT pending jobs"
 
 # Get processing jobs
 echo "Fetching processing jobs..."
-PROCESSING_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs?status=processing&limit=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
+PROCESSING_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs?status=processing&page_size=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
 PROCESSING_COUNT=$(echo "$PROCESSING_JOBS" | grep -c . 2>/dev/null || echo "0")
 echo "Found $PROCESSING_COUNT processing jobs"
 
 # Get dead letter jobs
 echo "Fetching dead letter jobs..."
-DEAD_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs/dead-letter?limit=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
+DEAD_JOBS=$(curl -s "${GRAPHITI_API_URL}/jobs/dead-letter?page_size=1000" | jq -r '.jobs[].id // empty' 2>/dev/null || echo "")
 DEAD_COUNT=$(echo "$DEAD_JOBS" | grep -c . 2>/dev/null || echo "0")
 echo "Found $DEAD_COUNT dead letter jobs"
 
