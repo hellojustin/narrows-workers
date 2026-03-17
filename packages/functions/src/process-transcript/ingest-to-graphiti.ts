@@ -159,6 +159,7 @@ function ellipsize(str: string, maxLen: number): string {
 const SKIP_GRAPHITI_TYPES = new Set(['promotion', 'credits', 'sound-only']);
 
 const AD_KEYWORD_PATTERNS: RegExp[] = [
+  // Strong signals (multi-word phrases, high confidence)
   /promo code/i,
   /use code/i,
   /discount code/i,
@@ -168,10 +169,27 @@ const AD_KEYWORD_PATTERNS: RegExp[] = [
   /go to\s+\S+\.com/i,
   /brought to you by/i,
   /sponsored by/i,
+  /\bsupported\b/i,
   /thanks to our sponsor/i,
   /sign up at/i,
   /free trial/i,
   /special offer/i,
+  // Broad signals (single word / short phrase, widen the ambiguous zone)
+  /\bsponsor\w*\b/i,
+  /\boffer\b/i,
+  /\bdeal\b/i,
+  /\bcoupon\b/i,
+  /\bsubscri(?:be|ption)\b/i,
+  /\bdeliver(?:ed|y|s|ing)?\b/i,
+  /\.com\b/i,
+  /\bquick break\b/i,
+  /we(?:'ll| will) be (?:right )?back/i,
+  /\bword from\b/i,
+  /\bsign up\b/i,
+  /\bto your door\b/i,
+  /\bget started\b/i,
+  /\bcheck (?:it )?out\b/i,
+  /\bfirst (?:order|month|purchase)\b/i,
 ];
 
 /**
@@ -183,7 +201,7 @@ function countAdKeywordMatches(text: string): number {
 
 /**
  * Classify ambiguous text as advertisement or content using an LLM.
- * Only called when exactly 1 keyword pattern matched (ambiguous case).
+ * Called when 1-2 keyword patterns matched (ambiguous zone).
  */
 async function isAdvertisementLLM(openai: OpenAI, text: string): Promise<boolean> {
   try {
@@ -200,6 +218,7 @@ Classify as ADVERTISEMENT if the text contains:
 - Product pitches with URLs or calls to action (e.g., "visit example.com", "go to example.com/podcast")
 - Mid-roll or pre/post-roll ad scripts
 - Affiliate marketing content
+- Native or brand-storytelling ads that describe a product or service in an aspirational or lifestyle-oriented way (e.g., a laundry service that "delivers to your door", a mattress brand promising better sleep)
 
 Classify as CONTENT if the text is:
 - Regular podcast discussion, interview, or conversation
@@ -403,16 +422,16 @@ export async function ingestSegmentsToGraphiti(
     const plainText = transcriptToText(segAudio);
     const keywordHits = countAdKeywordMatches(plainText);
 
-    if (keywordHits >= 2) {
+    if (keywordHits >= 3) {
       console.log(
         `Skipping segment ${segment.id} — detected as advertisement (${keywordHits} keyword matches)`
       );
       adSkippedCount++;
-    } else if (keywordHits === 1) {
+    } else if (keywordHits >= 1) {
       const isAd = await isAdvertisementLLM(openai, plainText);
       if (isAd) {
         console.log(
-          `Skipping segment ${segment.id} — LLM classified as advertisement (1 keyword match)`
+          `Skipping segment ${segment.id} — LLM classified as advertisement (${keywordHits} keyword match(es))`
         );
         adSkippedCount++;
       } else {
