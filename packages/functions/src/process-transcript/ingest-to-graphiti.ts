@@ -158,6 +158,74 @@ function ellipsize(str: string, maxLen: number): string {
  */
 const SKIP_GRAPHITI_TYPES = new Set(['promotion', 'credits', 'sound-only']);
 
+const AD_KEYWORD_PATTERNS: RegExp[] = [
+  /promo code/i,
+  /use code/i,
+  /discount code/i,
+  /percent off/i,
+  /% off/i,
+  /visit\s+\S+\.com/i,
+  /go to\s+\S+\.com/i,
+  /brought to you by/i,
+  /sponsored by/i,
+  /thanks to our sponsor/i,
+  /sign up at/i,
+  /free trial/i,
+  /special offer/i,
+];
+
+/**
+ * Count how many ad keyword patterns match in the given text.
+ */
+function countAdKeywordMatches(text: string): number {
+  return AD_KEYWORD_PATTERNS.filter((pattern) => pattern.test(text)).length;
+}
+
+/**
+ * Classify ambiguous text as advertisement or content using an LLM.
+ * Only called when exactly 1 keyword pattern matched (ambiguous case).
+ */
+async function isAdvertisementLLM(openai: OpenAI, text: string): Promise<boolean> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a classifier that determines if podcast transcript text is an advertisement or sponsor segment.
+
+Classify as ADVERTISEMENT if the text contains:
+- Sponsor reads or mentions (e.g., "brought to you by", "sponsored by", "thanks to our sponsor")
+- Promo codes or discount offers (e.g., "use code X for 20% off")
+- Product pitches with URLs or calls to action (e.g., "visit example.com", "go to example.com/podcast")
+- Mid-roll or pre/post-roll ad scripts
+- Affiliate marketing content
+
+Classify as CONTENT if the text is:
+- Regular podcast discussion, interview, or conversation
+- Educational or informational content
+- Story narration or entertainment
+- Host banter or show segments (even if briefly mentioning the show's own products/Patreon)
+
+Respond with ONLY "ADVERTISEMENT" or "CONTENT".`,
+        },
+        {
+          role: 'user',
+          content: text.slice(0, 2000),
+        },
+      ],
+      max_tokens: 10,
+      temperature: 0,
+    });
+
+    const result = response.choices[0]?.message?.content?.trim().toUpperCase();
+    return result === 'ADVERTISEMENT';
+  } catch (error) {
+    console.error('Error in LLM ad classification:', error);
+    return false;
+  }
+}
+
 /**
  * Chunk information for segments that were split due to size
  */
@@ -224,6 +292,7 @@ async function sendToGraphiti(
         series_title: series.title,
         episode_id: episode.id,
         episode_title: episode.title,
+        published_at: episode.publishedAt || null,
         // Segment info
         segment_id: segment.id,
         segment_type: segment.type,
@@ -312,13 +381,50 @@ export async function ingestSegmentsToGraphiti(
   const graphitiIds: string[] = [];
 
   // Filter out segments that should not be ingested to Graphiti
-  const segmentsToIngest = segments.filter((seg) => !SKIP_GRAPHITI_TYPES.has(seg.type));
-  const skippedCount = segments.length - segmentsToIngest.length;
+  const typeFiltered = segments.filter((seg) => !SKIP_GRAPHITI_TYPES.has(seg.type));
+  const typeSkippedCount = segments.length - typeFiltered.length;
 
-  if (skippedCount > 0) {
+  if (typeSkippedCount > 0) {
     console.log(
-      `Skipping ${skippedCount} segments (promotion/credits/sound-only) for Graphiti ingestion`
+      `Skipping ${typeSkippedCount} segments (promotion/credits/sound-only) for Graphiti ingestion`
     );
+  }
+
+  // Second-pass ad detection: keyword scan + LLM classifier for ambiguous cases
+  const segmentsToIngest: Segment[] = [];
+  let adSkippedCount = 0;
+
+  for (const segment of typeFiltered) {
+    const segAudio = getAudioSegmentsInRange(
+      audioSegments,
+      segment.episodeStartSec,
+      segment.episodeEndSec
+    );
+    const plainText = transcriptToText(segAudio);
+    const keywordHits = countAdKeywordMatches(plainText);
+
+    if (keywordHits >= 2) {
+      console.log(
+        `Skipping segment ${segment.id} — detected as advertisement (${keywordHits} keyword matches)`
+      );
+      adSkippedCount++;
+    } else if (keywordHits === 1) {
+      const isAd = await isAdvertisementLLM(openai, plainText);
+      if (isAd) {
+        console.log(
+          `Skipping segment ${segment.id} — LLM classified as advertisement (1 keyword match)`
+        );
+        adSkippedCount++;
+      } else {
+        segmentsToIngest.push(segment);
+      }
+    } else {
+      segmentsToIngest.push(segment);
+    }
+  }
+
+  if (adSkippedCount > 0) {
+    console.log(`Skipping ${adSkippedCount} additional segments (ad detection) for Graphiti ingestion`);
   }
 
   for (let i = 0; i < segmentsToIngest.length; i++) {
