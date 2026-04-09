@@ -44,6 +44,43 @@ interface RssRefreshMessage {
 }
 
 /**
+ * Extract the image href from an itunes:image XML object.
+ * rss-parser returns { $: { href: '...' } } for <itunes:image href="..." />.
+ */
+function getItunesImageHref(itunesImage: unknown): string | undefined {
+  if (!itunesImage || typeof itunesImage !== "object") return undefined;
+  const img = itunesImage as { $?: { href?: string }; href?: string };
+  return img.$?.href || img.href;
+}
+
+/**
+ * Heuristic: does a URL plausibly point to an image rather than a webpage?
+ */
+function looksLikeImageUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    if (pathname.endsWith("/")) return false;
+    const webExts = [".html", ".htm", ".php", ".asp", ".aspx", ".jsp"];
+    return !webExts.some((ext) => pathname.endsWith(ext));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick the best image URL, preferring itunes:image when it looks like an
+ * actual image URL, falling back to the standard RSS <image><url>.
+ */
+function pickBestImageUrl(
+  itunesImageData: unknown,
+  rssImageUrl: string | undefined
+): string | undefined {
+  const itunesUrl = getItunesImageHref(itunesImageData);
+  if (itunesUrl && looksLikeImageUrl(itunesUrl)) return itunesUrl;
+  return rssImageUrl;
+}
+
+/**
  * Parse duration string (HH:MM:SS or MM:SS or seconds) to seconds
  */
 function parseDuration(duration: string | undefined): number | null {
@@ -343,13 +380,12 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       console.log(`Found ${feed.items.length} items in feed`);
 
       // 3. Update series metadata from feed with ALL available fields
-      const itunesImage = feed.itunesImage as { href?: string } | undefined;
       const owner = extractOwner(feed.itunesOwner);
       const categories = extractCategories(feed.itunesCategories as unknown[] | undefined);
       const itunesType = feed.itunesType as string | undefined;
       const seriesType = itunesType === "serial" ? "serial" : "episodic";
 
-      const seriesImageUrl = itunesImage?.href || feed.image?.url;
+      const seriesImageUrl = pickBestImageUrl(feed.itunesImage, feed.image?.url);
       await updateSeriesFromFeed(seriesId, {
         title: feed.title || series.title,
         description: feed.description || (feed.itunesSummary as string | undefined),
@@ -391,7 +427,6 @@ export const main: SQSHandler = async (event: SQSEvent) => {
 
         // Extract enclosure data
         const enclosure = item.enclosure;
-        const itunesImage = item.itunesImage as { href?: string } | undefined;
 
         // Prepare episode data (without processingStatus - that's managed separately)
         const episodeData = {
@@ -402,7 +437,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           enclosureType: enclosure?.type,
           enclosureLength: enclosure?.length ? parseInt(enclosure.length, 10) : undefined,
           link: item.link,
-          imageUrl: itunesImage?.href,
+          imageUrl: pickBestImageUrl(item.itunesImage, undefined),
           duration: parseDuration(item.itunesDuration as string | undefined),
           publishedAt: pubDate?.toISOString(),
           episodeNumber: item.itunesEpisode ? parseInt(item.itunesEpisode as string, 10) : undefined,
@@ -426,7 +461,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         }
 
         // Enqueue for image download if episode has an image URL but no imageMediaId
-        const episodeImageUrl = itunesImage?.href;
+        const episodeImageUrl = episodeData.imageUrl;
         if (episodeImageUrl && !episodeImageMediaId) {
           await enqueueImageDownload("episode", episodeId, episodeImageUrl);
           console.log(`Enqueued episode "${item.title}" for image download`);
