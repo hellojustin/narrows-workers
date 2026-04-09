@@ -118,7 +118,8 @@ export async function upsertSegment(segment: Segment): Promise<void> {
  */
 export async function updateEpisodeComplete(
   episodeId: string,
-  graphitiEpisodeIds: string[]
+  graphitiEpisodeIds: string[],
+  duration?: number,
 ): Promise<void> {
   await fetch(`${getApiUrl()}/api/v1/episodes/${episodeId}`, {
     method: 'PUT',
@@ -129,6 +130,7 @@ export async function updateEpisodeComplete(
     body: JSON.stringify({
       graphitiEpisodeIds,
       processingStatus: 'complete',
+      ...(duration != null && { duration: Math.round(duration) }),
     }),
   });
 }

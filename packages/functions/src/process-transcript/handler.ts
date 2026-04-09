@@ -162,8 +162,13 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       );
       console.log(`Ingested ${graphitiIds.length} items to Graphiti`);
 
-      // 7. Update episode with complete status
-      await updateEpisodeComplete(episodeId, graphitiIds);
+      // 7. Compute duration from transcript segments
+      const transcriptDuration = segments.length > 0
+        ? Math.max(...segments.map((s) => parseFloat(s.end_time)))
+        : undefined;
+
+      // 8. Update episode with complete status and duration
+      await updateEpisodeComplete(episodeId, graphitiIds, transcriptDuration);
 
       console.log(`Successfully processed transcript for episode: ${episodeId}`);
       console.log(
