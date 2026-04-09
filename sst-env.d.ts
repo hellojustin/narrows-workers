@@ -6,67 +6,6 @@
 
 declare module "sst" {
   export interface Resource {
-    "AudioDownloadQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "DownloadAudio": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "DownloadImage": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "FetchRss": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "ImageDownloadQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "ImageProcessingQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "OnMediaConvertComplete": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "OnTranscribeComplete": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "ProcessImage": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "ProcessTranscript": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "ProcessingQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "ResizeImage": {
-      "name": string
-      "type": "sst.aws.Function"
-      "url": string
-    }
-    "RssRefreshQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "StartProcessing": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "TranscriptIngestQueue": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
   }
 }
 /// <reference path="sst-env.d.ts" />

@@ -32,11 +32,11 @@ const parser = new Parser({
 
 interface SeriesData {
   id: string;
-  rssUrl: string;
-  episodeCutoffDate: string;
+  rss_url: string;
+  episode_cutoff_date: string;
   title?: string;
-  imageUrl?: string;
-  imageMediaId?: string | null;
+  image_url?: string;
+  icon_media_id?: string | null;
 }
 
 interface RssRefreshMessage {
@@ -312,7 +312,7 @@ async function enqueueImageDownload(
  * Fetch RSS Lambda
  *
  * Consumes from rss-refresh-queue
- * Fetches RSS feed from series.rssUrl
+ * Fetches RSS feed from series.rss_url
  * Parses episodes and creates/updates Episode records
  * Enqueues episode IDs to audio-download-queue
  */
@@ -332,14 +332,14 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         continue;
       }
 
-      if (!series.rssUrl) {
+      if (!series.rss_url) {
         console.error(`Series ${seriesId} has no RSS URL`);
         continue;
       }
 
       // 2. Fetch and parse RSS feed
-      console.log(`Fetching RSS feed: ${series.rssUrl}`);
-      const feed = await parser.parseURL(series.rssUrl);
+      console.log(`Fetching RSS feed: ${series.rss_url}`);
+      const feed = await parser.parseURL(series.rss_url);
       console.log(`Found ${feed.items.length} items in feed`);
 
       // 3. Update series metadata from feed with ALL available fields
@@ -369,14 +369,14 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         lastFetchedAt: new Date().toISOString(),
       });
 
-      // 3.5. Enqueue series image download if needed
-      if (seriesImageUrl && !series.imageMediaId) {
+      // 3.5. Enqueue series image download if no image yet or artwork URL changed
+      if (seriesImageUrl && (!series.icon_media_id || seriesImageUrl !== series.image_url)) {
         await enqueueImageDownload("series", seriesId, seriesImageUrl);
         console.log(`Enqueued series image download: ${seriesImageUrl}`);
       }
 
       // 4. Process episodes
-      const cutoffDate = new Date(series.episodeCutoffDate);
+      const cutoffDate = new Date(series.episode_cutoff_date);
       let processedCount = 0;
       let enqueuedCount = 0;
 
