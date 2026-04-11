@@ -10,6 +10,7 @@ import {
   imageProcessingQueue,
   processingQueue,
   transcriptIngestQueue,
+  listeningEventsQueue,
 } from "./queues";
 
 // VPC configuration for Lambda functions
@@ -261,6 +262,34 @@ export const resizeImage = new sst.aws.Function("ResizeImage", {
   nodejs: {
     install: ["sharp"], // Install sharp for Lambda (Linux) platform
   },
+});
+
+// Ingest Listening Events - receives listening events from SQS and posts to narrows API
+export const ingestListeningEvents = new sst.aws.Function("IngestListeningEvents", {
+  name: `narrows-${$app.stage}-ingest-listening-events`,
+  handler: "packages/functions/src/ingest-listening-events/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "1 minute",
+  memory: "256 MB",
+  permissions: [
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [listeningEventsQueue.arn],
+    },
+  ],
+  environment: commonEnv,
+});
+listeningEventsQueue.subscribe(ingestListeningEvents.arn);
+
+// Rollup Listening - hourly consistency sweep for listening summaries and patterns
+// Triggered by EventBridge schedule (configured in events.ts)
+export const rollupListening = new sst.aws.Function("RollupListening", {
+  name: `narrows-${$app.stage}-rollup-listening`,
+  handler: "packages/functions/src/rollup-listening/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "5 minutes",
+  memory: "512 MB",
+  environment: commonEnv,
 });
 
 // Export the Lambda ARNs for EventBridge rule setup

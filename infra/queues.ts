@@ -18,12 +18,22 @@ export const audioDownloadQueue = new sst.aws.Queue("AudioDownloadQueue", {
 export const imageDownloadQueue = new sst.aws.Queue("ImageDownloadQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
+  transform: {
+    queue: {
+      name: `narrows-${$app.stage}-image-download`,
+    },
+  },
 });
 
 // Queue for processing downloaded images (converting to base formats)
 export const imageProcessingQueue = new sst.aws.Queue("ImageProcessingQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
+  transform: {
+    queue: {
+      name: `narrows-${$app.stage}-image-processing`,
+    },
+  },
 });
 
 // Queue for starting MediaConvert and Transcribe processing
@@ -36,4 +46,15 @@ export const processingQueue = new sst.aws.Queue("ProcessingQueue", {
 export const transcriptIngestQueue = new sst.aws.Queue("TranscriptIngestQueue", {
   fifo: false,
   visibilityTimeout: "16 minutes", // Must be >= Lambda timeout (15 min) + buffer
+});
+
+// Queue for ingesting listening events from the narrows API
+export const listeningEventsQueue = new sst.aws.Queue("ListeningEventsQueue", {
+  fifo: false,
+  visibilityTimeout: "2 minutes",
+  transform: {
+    queue: {
+      name: `narrows-${$app.stage}-listening-events`,
+    },
+  },
 });

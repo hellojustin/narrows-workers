@@ -12,6 +12,8 @@
  * doesn't have native support for EventBridge rule subscriptions to the default bus.
  */
 
+import { rollupListening } from "./functions";
+
 // Placeholder export to satisfy the import in sst.config.ts
 export const eventBridgeConfig = {
   mediaConvertPattern: {
@@ -29,3 +31,10 @@ export const eventBridgeConfig = {
     },
   },
 };
+
+// Hourly schedule to invoke the RollupListening Lambda
+// Uses SST's Cron construct to create an EventBridge scheduled rule
+export const rollupSchedule = new sst.aws.Cron("RollupListeningSchedule", {
+  schedule: "rate(1 hour)",
+  function: rollupListening.arn,
+});

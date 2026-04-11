@@ -30,6 +30,14 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
+    "IngestListeningEvents": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "ListeningEventsQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "OnMediaConvertComplete": {
       "name": string
       "type": "sst.aws.Function"
@@ -54,6 +62,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
       "url": string
+    }
+    "RollupListening": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "RssRefreshQueue": {
       "type": "sst.aws.Queue"

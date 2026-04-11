@@ -16,8 +16,18 @@ export default $config({
   },
   async run() {
     await import("./infra/storage");
-    await import("./infra/queues");
+    const queues = await import("./infra/queues");
     await import("./infra/events");
     await import("./infra/functions");
+
+    return {
+      rssRefreshQueueUrl: queues.rssRefreshQueue.url,
+      audioDownloadQueueUrl: queues.audioDownloadQueue.url,
+      imageDownloadQueueUrl: queues.imageDownloadQueue.url,
+      imageProcessingQueueUrl: queues.imageProcessingQueue.url,
+      processingQueueUrl: queues.processingQueue.url,
+      transcriptIngestQueueUrl: queues.transcriptIngestQueue.url,
+      listeningEventsQueueUrl: queues.listeningEventsQueue.url,
+    };
   },
 });
