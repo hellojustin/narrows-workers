@@ -96,7 +96,6 @@ export const main: ScheduledHandler = async () => {
       episode_id: episodeId,
       listened_ranges: merged,
       total_listen_sec: totalListenSec,
-      pct_complete: 0, // Will be computed when episode duration is available
       listen_count: events.length,
       first_listened_at: new Date(Math.min(...listenedAts)).toISOString(),
       last_listened_at: new Date(Math.max(...listenedAts)).toISOString(),

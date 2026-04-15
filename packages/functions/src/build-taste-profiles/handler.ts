@@ -54,8 +54,11 @@ function recencyDecay(dateStr: string | null): number {
   return Math.exp((-LN2 / RECENCY_HALF_LIFE_DAYS) * Math.max(daysAgo, 0));
 }
 
-function listenWeight(pctComplete: number): number {
-  return Math.min(1.0, pctComplete);
+function listenWeight(totalListenSec: number): number {
+  if (totalListenSec <= 0) return 0;
+  // Logarithmic scaling so early minutes count most but long listens still accumulate.
+  // 10 min → ~0.51, 30 min → ~0.73, 60 min → ~0.86, 120 min → ~0.95
+  return Math.min(1.0, Math.log2(1 + totalListenSec / 600));
 }
 
 // ---- Types ----
@@ -154,7 +157,7 @@ async function buildProfileForUser(
   const sentimentWeights = new Map<string, number>();
 
   for (const s of summaries) {
-    const weight = listenWeight(s.pct_complete) * recencyDecay(s.last_listened_at);
+    const weight = listenWeight(s.total_listen_sec) * recencyDecay(s.last_listened_at);
     if (weight <= 0) continue;
 
     // Series affinity
