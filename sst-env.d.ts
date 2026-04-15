@@ -10,6 +10,10 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
+    "BuildTasteProfiles": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "DownloadAudio": {
       "name": string
       "type": "sst.aws.Function"

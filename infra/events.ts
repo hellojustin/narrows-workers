@@ -12,7 +12,7 @@
  * doesn't have native support for EventBridge rule subscriptions to the default bus.
  */
 
-import { rollupListening } from "./functions";
+import { rollupListening, buildTasteProfiles } from "./functions";
 
 // Placeholder export to satisfy the import in sst.config.ts
 export const eventBridgeConfig = {
@@ -37,4 +37,10 @@ export const eventBridgeConfig = {
 export const rollupSchedule = new sst.aws.Cron("RollupListeningSchedule", {
   schedule: "rate(1 hour)",
   function: rollupListening.arn,
+});
+
+// Rebuild taste profiles for users with new listening data
+export const tasteProfileSchedule = new sst.aws.Cron("TasteProfileSchedule", {
+  schedule: "rate(5 minutes)",
+  function: buildTasteProfiles.arn,
 });

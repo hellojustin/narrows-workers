@@ -292,6 +292,25 @@ export const rollupListening = new sst.aws.Function("RollupListening", {
   environment: commonEnv,
 });
 
+// Build Taste Profiles - periodic computation of user taste vectors
+// Reads listening summaries + segment metadata from narrows API,
+// entity associations from Graphiti, and upserts taste profiles.
+// Triggered by EventBridge schedule (configured in events.ts)
+export const buildTasteProfiles = new sst.aws.Function("BuildTasteProfiles", {
+  name: `narrows-${$app.stage}-build-taste-profiles`,
+  handler: "packages/functions/src/build-taste-profiles/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "10 minutes",
+  memory: "512 MB",
+  vpc: vpcConfig,
+  environment: {
+    ...commonEnv,
+    GRAPHITI_API_URL: process.env.GRAPHITI_API_URL ?? "",
+    GRAPHITI_API_KEY: process.env.GRAPHITI_API_KEY ?? "",
+    GRAPHITI_GRAPH_ID: process.env.GRAPHITI_GRAPH_ID ?? "",
+  },
+});
+
 // Export the Lambda ARNs for EventBridge rule setup
 export const lambdaArns = {
   onMediaConvertComplete: onMediaConvertComplete.arn,
