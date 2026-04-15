@@ -32,11 +32,14 @@ async function narrowsFetch(path: string, options: RequestInit = {}) {
   return response.json();
 }
 
-async function graphitiFetch(path: string) {
+async function graphitiFetch(path: string, options: RequestInit = {}) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (GRAPHITI_API_KEY) headers["Authorization"] = `Bearer ${GRAPHITI_API_KEY}`;
 
-  const response = await fetch(`${GRAPHITI_API_URL}${path}`, { headers });
+  const response = await fetch(`${GRAPHITI_API_URL}${path}`, {
+    ...options,
+    headers: { ...headers, ...(options.headers as Record<string, string>) },
+  });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Graphiti ${path} returned ${response.status}: ${text}`);
@@ -69,6 +72,7 @@ interface SummaryRow {
   series_id: string;
   total_listen_sec: number;
   pct_complete: number;
+  listened_ranges: [number, number][];
   last_listened_at: string | null;
 }
 
@@ -91,44 +95,134 @@ const SENTIMENT_KEYS = ["lucidity", "polarity", "arousal", "subjectivity", "humo
 
 // ---- Entity lookup via Graphiti ----
 
-async function getEntityNamesForEpisodes(episodeIds: string[]): Promise<Map<string, string[]>> {
-  const result = new Map<string, string[]>();
-  if (!GRAPHITI_GRAPH_ID || !GRAPHITI_API_URL || episodeIds.length === 0) return result;
+interface EpisodeRanges {
+  episode_id: string;
+  ranges: [number, number][];
+}
 
-  // Get episodic nodes for these narrows episode_ids, then find entity connections
-  // Use the graph's episodes endpoint filtered by episode_id
-  for (const episodeId of episodeIds) {
-    try {
-      const data = await graphitiFetch(
-        `/graphs/${GRAPHITI_GRAPH_ID}/episodes?episode_id=${encodeURIComponent(episodeId)}&page_size=100`,
-      );
-      const episodicUuids: string[] = (data.episodes ?? []).map((e: { uuid: string }) => e.uuid);
+/**
+ * Collect listened_ranges per episode across all summaries, unioning ranges
+ * for the same episode listened to by different users.
+ */
+function collectListenedRangesPerEpisode(summaries: SummaryRow[]): EpisodeRanges[] {
+  const byEpisode = new Map<string, [number, number][]>();
+  for (const s of summaries) {
+    const ranges = s.listened_ranges ?? [];
+    if (ranges.length === 0) continue;
+    const existing = byEpisode.get(s.episode_id) ?? [];
+    existing.push(...ranges);
+    byEpisode.set(s.episode_id, existing);
+  }
 
-      // For each episodic node, get its 1-hop subgraph to find entity connections
-      for (const uuid of episodicUuids.slice(0, 5)) {
-        try {
-          const sub = await graphitiFetch(
-            `/graphs/${GRAPHITI_GRAPH_ID}/nodes/${uuid}?depth=1&max_nodes=50`,
-          );
-          const entityNames: string[] = [];
-          for (const node of sub.nodes ?? []) {
-            if (node.uuid === uuid) continue;
-            const labels: string[] = node.labels ?? [];
-            if (!labels.includes("Episodic") && !labels.includes("Topic") && !labels.includes("Community")) {
-              entityNames.push(node.name);
-            }
-          }
-          const existing = result.get(episodeId) ?? [];
-          existing.push(...entityNames);
-          result.set(episodeId, [...new Set(existing)]);
-        } catch {
-          // skip individual node failures
-        }
+  const result: EpisodeRanges[] = [];
+  for (const [episode_id, ranges] of byEpisode) {
+    // Deduplicate overlapping ranges by merging
+    const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [];
+    for (const [s, e] of sorted) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1]) {
+        last[1] = Math.max(last[1], e);
+      } else {
+        merged.push([s, e]);
       }
-    } catch {
-      // skip episode failures
+    }
+    result.push({ episode_id, ranges: merged });
+  }
+  return result;
+}
+
+const SUBGRAPH_BATCH_SIZE = 200;
+
+/**
+ * Resolve entity names for listened portions of episodes using two Graphiti calls:
+ * 1. POST /episodes/filter — get episodic node UUIDs matching listened time ranges
+ * 2. GET /nodes/subgraph — multi-root depth-1 traversal to find connected entities
+ */
+async function getEntityNamesForListenedPortions(
+  episodeRanges: EpisodeRanges[],
+): Promise<Map<string, string[]>> {
+  const result = new Map<string, string[]>();
+  if (!GRAPHITI_GRAPH_ID || !GRAPHITI_API_URL || episodeRanges.length === 0) return result;
+
+  // Step 1: Batch-filter episodic nodes by time overlap
+  const filterPayload = {
+    filters: episodeRanges.map((er) => ({
+      episode_id: er.episode_id,
+      ranges: er.ranges,
+    })),
+  };
+
+  const filterResult = await graphitiFetch(
+    `/graphs/${GRAPHITI_GRAPH_ID}/episodes/filter`,
+    { method: "POST", body: JSON.stringify(filterPayload) },
+  );
+
+  // Build a map from episodic UUID -> narrows episode_id, and collect all UUIDs
+  const uuidToEpisodeId = new Map<string, string>();
+  const allEpisodicUuids: string[] = [];
+
+  for (const item of filterResult.results ?? []) {
+    const episodeId: string = item.episode_id;
+    for (const ep of item.episodes ?? []) {
+      uuidToEpisodeId.set(ep.uuid, episodeId);
+      allEpisodicUuids.push(ep.uuid);
     }
   }
+
+  console.log(`TasteBuilder: filtered to ${allEpisodicUuids.length} episodic nodes from ${episodeRanges.length} episodes`);
+  if (allEpisodicUuids.length === 0) return result;
+
+  // Step 2: Multi-root subgraph traversal in batches
+  for (let i = 0; i < allEpisodicUuids.length; i += SUBGRAPH_BATCH_SIZE) {
+    const batch = allEpisodicUuids.slice(i, i + SUBGRAPH_BATCH_SIZE);
+    const params = new URLSearchParams();
+    for (const uuid of batch) {
+      params.append("node_uuids", uuid);
+    }
+    params.set("depth", "1");
+    params.set("max_nodes", "5000");
+
+    const sub = await graphitiFetch(
+      `/graphs/${GRAPHITI_GRAPH_ID}/nodes/subgraph?${params.toString()}`,
+    );
+
+    // Extract entity names connected to each episodic root
+    const rootUuids = new Set(batch);
+    for (const edge of sub.edges ?? []) {
+      const sourceUuid: string = edge.source_node_uuid;
+      const targetUuid: string = edge.target_node_uuid;
+
+      // Find which side is the episodic root and which is the entity
+      let episodicUuid: string | undefined;
+      let entityUuid: string | undefined;
+      if (rootUuids.has(sourceUuid)) {
+        episodicUuid = sourceUuid;
+        entityUuid = targetUuid;
+      } else if (rootUuids.has(targetUuid)) {
+        episodicUuid = targetUuid;
+        entityUuid = sourceUuid;
+      }
+      if (!episodicUuid || !entityUuid) continue;
+
+      // Find the entity node to get its name and labels
+      const entityNode = (sub.nodes ?? []).find((n: { uuid: string }) => n.uuid === entityUuid);
+      if (!entityNode) continue;
+
+      const labels: string[] = entityNode.labels ?? [];
+      if (labels.includes("Episodic") || labels.includes("Topic") || labels.includes("Community")) continue;
+
+      const episodeId = uuidToEpisodeId.get(episodicUuid);
+      if (!episodeId) continue;
+
+      const existing = result.get(episodeId) ?? [];
+      if (!existing.includes(entityNode.name)) {
+        existing.push(entityNode.name);
+      }
+      result.set(episodeId, existing);
+    }
+  }
+
   return result;
 }
 
@@ -294,8 +388,9 @@ export const main: ScheduledHandler = async () => {
   }
   console.log(`TasteBuilder: fetched segments for ${allSegments.size} episodes`);
 
-  // 3. Fetch entity associations from Graphiti
-  const entityMap = await getEntityNamesForEpisodes(allEpisodeIds);
+  // 3. Fetch entity associations from Graphiti (filtered to listened portions)
+  const episodeRanges = collectListenedRangesPerEpisode(allSummaries);
+  const entityMap = await getEntityNamesForListenedPortions(episodeRanges);
   console.log(`TasteBuilder: resolved entities for ${entityMap.size} episodes`);
 
   // 4. Build profiles per user
