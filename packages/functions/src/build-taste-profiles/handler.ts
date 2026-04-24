@@ -14,6 +14,13 @@ const RECENCY_HALF_LIFE_DAYS = 30;
 const LN2 = Math.LN2;
 const TOP_ENTITIES = 50;
 
+// Minimum-data gate. Users below all three thresholds are skipped — their
+// existing profile (default-seeded at user creation, or a previous Lambda
+// build) is preserved. Computed against in-window summaries only.
+const MIN_LISTEN_SEC = 300;
+const MIN_ENTITIES = 10;
+const MIN_SERIES = 3;
+
 // ---- API helpers ----
 
 async function narrowsFetch(path: string, options: RequestInit = {}) {
@@ -170,11 +177,13 @@ async function getEntityNamesForListenedPortions(
     }
   }
 
-  console.log(`TasteBuilder: filtered to ${allEpisodicUuids.length} episodic nodes from ${episodeRanges.length} episodes`);
+  console.log(`TasteBuilder: episode filter returned ${allEpisodicUuids.length} episodic nodes from ${episodeRanges.length} episodes (${filterResult.results?.length ?? 0} result groups)`);
   if (allEpisodicUuids.length === 0) return result;
 
   // Step 2: Multi-root subgraph traversal in batches
+  const totalBatches = Math.ceil(allEpisodicUuids.length / SUBGRAPH_BATCH_SIZE);
   for (let i = 0; i < allEpisodicUuids.length; i += SUBGRAPH_BATCH_SIZE) {
+    const batchIdx = Math.floor(i / SUBGRAPH_BATCH_SIZE) + 1;
     const batch = allEpisodicUuids.slice(i, i + SUBGRAPH_BATCH_SIZE);
     const params = new URLSearchParams();
     for (const uuid of batch) {
@@ -186,6 +195,8 @@ async function getEntityNamesForListenedPortions(
     const sub = await graphitiFetch(
       `/graphs/${GRAPHITI_GRAPH_ID}/nodes/subgraph?${params.toString()}`,
     );
+
+    console.log(`TasteBuilder: subgraph batch ${batchIdx}/${totalBatches}: ${(sub.nodes ?? []).length} nodes, ${(sub.edges ?? []).length} edges`);
 
     // Extract entity names connected to each episodic root
     const rootUuids = new Set(batch);
@@ -342,8 +353,16 @@ async function buildProfileForUser(
 // ---- Main handler ----
 
 export const main: ScheduledHandler = async () => {
+  const t0 = Date.now();
   const since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
-  console.log(`TasteBuilder: fetching summaries updated since ${since}`);
+
+  console.log("TasteBuilder: starting", {
+    since,
+    lookbackHours: LOOKBACK_HOURS,
+    narrowsApi: NARROWS_API_URL ?? "(unset)",
+    graphitiApi: GRAPHITI_API_URL ?? "(unset)",
+    graphitiGraphId: GRAPHITI_GRAPH_ID ?? "(unset)",
+  });
 
   // 1. Fetch all recently-updated summaries (paginated)
   const allSummaries: SummaryRow[] = [];
@@ -359,8 +378,10 @@ export const main: ScheduledHandler = async () => {
     page++;
   }
 
-  console.log(`TasteBuilder: fetched ${allSummaries.length} summaries`);
-  if (allSummaries.length === 0) return;
+  if (allSummaries.length === 0) {
+    console.log(`TasteBuilder: no summaries updated since ${since}, nothing to do (${Date.now() - t0}ms)`);
+    return;
+  }
 
   // Group summaries by user
   const byUser = new Map<string, SummaryRow[]>();
@@ -373,8 +394,13 @@ export const main: ScheduledHandler = async () => {
   // Collect all unique episode_ids
   const allEpisodeIds = [...new Set(allSummaries.map((s) => s.episode_id))];
 
+  const withRanges = allSummaries.filter((s) => (s.listened_ranges ?? []).length > 0).length;
+  console.log(`TasteBuilder: fetched ${allSummaries.length} summaries across ${byUser.size} users, ${allEpisodeIds.length} unique episodes (${withRanges} have listened_ranges) (${Date.now() - t0}ms)`);
+
   // 2. Fetch segment metadata in batches
+  const t1 = Date.now();
   const allSegments = new Map<string, SegmentMeta[]>();
+  let totalSegments = 0;
   for (let i = 0; i < allEpisodeIds.length; i += SEGMENT_BATCH_SIZE) {
     const batch = allEpisodeIds.slice(i, i + SEGMENT_BATCH_SIZE);
     const result = await narrowsFetch(
@@ -384,23 +410,64 @@ export const main: ScheduledHandler = async () => {
       const group = allSegments.get(seg.episode_id) ?? [];
       group.push(seg);
       allSegments.set(seg.episode_id, group);
+      totalSegments++;
     }
   }
-  console.log(`TasteBuilder: fetched segments for ${allSegments.size} episodes`);
+  console.log(`TasteBuilder: fetched ${totalSegments} segments across ${allSegments.size}/${allEpisodeIds.length} episodes (${Date.now() - t1}ms)`);
 
   // 3. Fetch entity associations from Graphiti (filtered to listened portions)
+  const t2 = Date.now();
   const episodeRanges = collectListenedRangesPerEpisode(allSummaries);
-  const entityMap = await getEntityNamesForListenedPortions(episodeRanges);
-  console.log(`TasteBuilder: resolved entities for ${entityMap.size} episodes`);
 
-  // 4. Build profiles per user
-  const profiles: ProfileData[] = [];
-  for (const [userId, summaries] of byUser) {
-    const profile = await buildProfileForUser(userId, summaries, allSegments, entityMap);
-    profiles.push(profile);
+  if (episodeRanges.length === 0) {
+    console.log("TasteBuilder: no episodes have listened_ranges, skipping entity lookup");
+  } else if (!GRAPHITI_GRAPH_ID || !GRAPHITI_API_URL) {
+    console.log("TasteBuilder: GRAPHITI_GRAPH_ID or GRAPHITI_API_URL not set, skipping entity lookup");
+  } else {
+    console.log(`TasteBuilder: resolving entities for ${episodeRanges.length} episodes with listened_ranges`);
   }
 
+  const entityMap = await getEntityNamesForListenedPortions(episodeRanges);
+  const totalEntities = [...entityMap.values()].reduce((sum, names) => sum + names.length, 0);
+  console.log(`TasteBuilder: resolved ${totalEntities} unique entities across ${entityMap.size} episodes (${Date.now() - t2}ms)`);
+
+  // 4. Build profiles per user
+  const t3 = Date.now();
+  const profiles: ProfileData[] = [];
+  let skippedBelowThreshold = 0;
+  for (const [userId, summaries] of byUser) {
+    const profile = await buildProfileForUser(userId, summaries, allSegments, entityMap);
+    const totalSec = summaries.reduce((sum, s) => sum + s.total_listen_sec, 0);
+    const distinctSeries = new Set(summaries.map((s) => s.series_id).filter(Boolean)).size;
+    const distinctEntities = Object.keys(profile.entity_affinities).length;
+
+    if (totalSec < MIN_LISTEN_SEC || distinctEntities < MIN_ENTITIES || distinctSeries < MIN_SERIES) {
+      skippedBelowThreshold++;
+      console.log(`TasteBuilder: skip ${userId.slice(0, 8)} below threshold`, {
+        sec: Math.round(totalSec),
+        entities: distinctEntities,
+        series: distinctSeries,
+      });
+      continue;
+    }
+    profiles.push(profile);
+  }
+  if (skippedBelowThreshold > 0) {
+    console.log(`TasteBuilder: skipped ${skippedBelowThreshold}/${byUser.size} users below threshold (existing profiles preserved)`);
+  }
+
+  const profileStats = profiles.map((p) => ({
+    user: p.user_id.slice(0, 8),
+    entities: Object.keys(p.entity_affinities).length,
+    series: Object.keys(p.series_affinities).length,
+    categories: Object.keys(p.category_affinities).length,
+    sentimentKeys: Object.keys(p.sentiment_center).length,
+    segTypes: Object.keys(p.segment_type_dist).length,
+  }));
+  console.log(`TasteBuilder: built ${profiles.length} profiles (${Date.now() - t3}ms)`, JSON.stringify(profileStats));
+
   // 5. Upsert profiles in batches
+  const t4 = Date.now();
   for (let i = 0; i < profiles.length; i += PROFILE_BATCH_SIZE) {
     const batch = profiles.slice(i, i + PROFILE_BATCH_SIZE);
     await narrowsFetch("/api/v1/internal/taste-profiles/upsert", {
@@ -408,5 +475,6 @@ export const main: ScheduledHandler = async () => {
       body: JSON.stringify({ profiles: batch }),
     });
   }
-  console.log(`TasteBuilder: upserted ${profiles.length} taste profiles`);
+  console.log(`TasteBuilder: upserted ${profiles.length} profiles (${Date.now() - t4}ms)`);
+  console.log(`TasteBuilder: done in ${Date.now() - t0}ms`);
 };
