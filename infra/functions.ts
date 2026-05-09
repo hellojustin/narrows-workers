@@ -139,7 +139,62 @@ export const processImage = new sst.aws.Function("ProcessImage", {
 });
 imageProcessingQueue.subscribe(processImage.arn);
 
-// Start Processing - initiates both MediaConvert and Transcribe in parallel
+// On Transcription Webhook - receives AssemblyAI webhook, adapts transcript, writes to S3
+// Must be declared before startProcessing so its .url is available for SST linking
+export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebhook", {
+  name: `narrows-${$app.stage}-on-transcription-webhook`,
+  handler: "packages/functions/src/on-transcription-webhook/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "2 minutes",
+  memory: "512 MB",
+  url: {
+    authorization: "none", // Public access for AssemblyAI webhook (same pattern as resizeImage)
+  },
+  permissions: [
+    {
+      actions: ["s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [transcriptIngestQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
+    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
+  },
+  link: [transcriptIngestQueue],
+});
+
+// Check Stale Transcriptions - polls AssemblyAI for episodes stuck in processing
+// Recovers episodes where the webhook was missed or our handler failed
+export const checkStaleTranscriptions = new sst.aws.Function("CheckStaleTranscriptions", {
+  name: `narrows-${$app.stage}-check-stale-transcriptions`,
+  handler: "packages/functions/src/check-stale-transcriptions/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "5 minutes",
+  memory: "512 MB",
+  permissions: [
+    {
+      actions: ["s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [transcriptIngestQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
+    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
+  },
+  link: [transcriptIngestQueue],
+});
+
+// Start Processing - initiates both MediaConvert (HLS) and AssemblyAI transcription in parallel
 export const startProcessing = new sst.aws.Function("StartProcessing", {
   name: `narrows-${$app.stage}-start-processing`,
   handler: "packages/functions/src/start-processing/handler.main",
@@ -156,14 +211,6 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
       resources: [process.env.MEDIACONVERT_ROLE_ARN ?? "*"],
     },
     {
-      actions: [
-        "transcribe:StartTranscriptionJob",
-        "transcribe:GetTranscriptionJob",
-        "transcribe:TagResource",
-      ],
-      resources: ["*"],
-    },
-    {
       actions: ["s3:GetObject", "s3:PutObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
@@ -176,6 +223,8 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     ...commonEnv,
     MEDIACONVERT_ENDPOINT: process.env.MEDIACONVERT_ENDPOINT ?? "",
     MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
+    ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
+    ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url, // SST resolves this at deploy time
   },
 });
 processingQueue.subscribe(startProcessing.arn);

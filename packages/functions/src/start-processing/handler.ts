@@ -4,13 +4,11 @@ import {
   CreateJobCommand,
   DescribeEndpointsCommand,
 } from "@aws-sdk/client-mediaconvert";
-import {
-  TranscribeClient,
-  StartTranscriptionJobCommand,
-} from "@aws-sdk/client-transcribe";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 let mediaConvertClient: MediaConvertClient | null = null;
-const transcribeClient = new TranscribeClient({});
+const s3Client = new S3Client({});
 
 interface ProcessingMessage {
   episodeId: string;
@@ -67,15 +65,6 @@ async function updateEpisode(
     },
     body: JSON.stringify(updates),
   });
-}
-
-/**
- * Generate a unique job name for Transcribe
- */
-function generateJobName(episodeId: string): string {
-  const timestamp = Date.now();
-  const shortId = episodeId.split("-")[0];
-  return `narrows-${shortId}-${timestamp}`;
 }
 
 /**
@@ -168,45 +157,57 @@ async function startMediaConvertJob(
 }
 
 /**
- * Start Transcribe job with speaker diarization
+ * Submit audio to AssemblyAI for transcription with speaker diarization.
+ *
+ * Generates a presigned S3 URL so AssemblyAI can fetch the audio directly
+ * without requiring the bucket to be public. Returns the AssemblyAI transcript
+ * ID which is stored on the episode as transcribeJobName for lookup later.
  */
-async function startTranscribeJob(
+async function startAssemblyAITranscription(
   episodeId: string,
   audioMediaId: string,
   bucketName: string
 ): Promise<string> {
-  const inputS3Uri = `s3://${bucketName}/raw/${audioMediaId}`;
-  const jobName = generateJobName(episodeId);
-
-  await transcribeClient.send(
-    new StartTranscriptionJobCommand({
-      TranscriptionJobName: jobName,
-      LanguageCode: "en-US",
-      Media: {
-        MediaFileUri: inputS3Uri,
-      },
-      OutputBucketName: bucketName,
-      OutputKey: `processed/${audioMediaId}/transcript.json`,
-      Settings: {
-        ShowSpeakerLabels: true,
-        MaxSpeakerLabels: 10,
-        ShowAlternatives: false,
-      },
-      Tags: [
-        { Key: "episodeId", Value: episodeId },
-        { Key: "audioMediaId", Value: audioMediaId },
-      ],
-    })
+  const presignedUrl = await getSignedUrl(
+    s3Client,
+    new GetObjectCommand({
+      Bucket: bucketName,
+      Key: `raw/${audioMediaId}`,
+    }),
+    { expiresIn: 3600 }
   );
 
-  return jobName;
+  const webhookBaseUrl = process.env.ASSEMBLYAI_WEBHOOK_URL;
+  const webhookUrl = `${webhookBaseUrl}?episodeId=${encodeURIComponent(episodeId)}&audioMediaId=${encodeURIComponent(audioMediaId)}`;
+
+  const response = await fetch("https://api.assemblyai.com/v2/transcript", {
+    method: "POST",
+    headers: {
+      Authorization: process.env.ASSEMBLYAI_API_KEY!,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      audio_url: presignedUrl,
+      speech_models: ["universal-2"],
+      speaker_labels: true,
+      webhook_url: webhookUrl,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`AssemblyAI submission failed: ${response.status} - ${errorText}`);
+  }
+
+  const result = (await response.json()) as { id: string };
+  return result.id;
 }
 
 /**
  * Start Processing Lambda
  *
  * Triggered by processing-queue
- * Starts both MediaConvert (HLS) and Transcribe jobs in parallel
+ * Starts both MediaConvert (HLS) and AssemblyAI transcription jobs in parallel
  */
 export const main: SQSHandler = async (event: SQSEvent) => {
   console.log("Received event:", JSON.stringify(event, null, 2));
@@ -227,13 +228,13 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       // Start both jobs in parallel
       const [mediaConvertJobId, transcribeJobName] = await Promise.all([
         startMediaConvertJob(episodeId, audioMediaId, bucketName, roleArn),
-        startTranscribeJob(episodeId, audioMediaId, bucketName),
+        startAssemblyAITranscription(episodeId, audioMediaId, bucketName),
       ]);
 
       console.log(`Started MediaConvert job: ${mediaConvertJobId}`);
-      console.log(`Started Transcribe job: ${transcribeJobName}`);
+      console.log(`Started AssemblyAI transcription: ${transcribeJobName}`);
 
-      // Update episode with job IDs
+      // Update episode with job IDs (transcribeJobName now holds the AssemblyAI transcript ID)
       await updateEpisode(episodeId, {
         mediaConvertJobId,
         transcribeJobName,

@@ -12,7 +12,7 @@
  * doesn't have native support for EventBridge rule subscriptions to the default bus.
  */
 
-import { rollupListening, buildTasteProfiles } from "./functions";
+import { rollupListening, buildTasteProfiles, checkStaleTranscriptions } from "./functions";
 
 // Placeholder export to satisfy the import in sst.config.ts
 export const eventBridgeConfig = {
@@ -43,4 +43,10 @@ export const rollupSchedule = new sst.aws.Cron("RollupListeningSchedule", {
 export const tasteProfileSchedule = new sst.aws.Cron("TasteProfileSchedule", {
   schedule: "rate(5 minutes)",
   function: buildTasteProfiles.arn,
+});
+
+// Recover episodes where AssemblyAI webhook was missed or our handler failed
+export const staleTranscriptionSchedule = new sst.aws.Cron("StaleTranscriptionSchedule", {
+  schedule: "rate(15 minutes)",
+  function: checkStaleTranscriptions.arn,
 });
