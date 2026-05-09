@@ -1,7 +1,9 @@
 #!/bin/bash
+# Required env vars (source from .env.production or export manually):
+#   GRAPHITI_API_URL
 set -e
 
-GRAPHITI_URL="http://graphiti.production.audiopond.net"
+GRAPHITI_URL="${GRAPHITI_API_URL:?Set GRAPHITI_API_URL (e.g. source .env.production)}"
 
 echo "=== Getting pending jobs ==="
 curl -s "${GRAPHITI_URL}/jobs?status=pending&page_size=500" | jq -r '.jobs[].id' > /tmp/pending_jobs.txt

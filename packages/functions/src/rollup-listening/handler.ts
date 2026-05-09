@@ -7,7 +7,7 @@ const LOOKBACK_HOURS = 2;
 const PAGE_SIZE = 5000;
 
 // Simple interval merge for the rollup
-function mergeIntervals(ranges: [number, number][]): [number, number][] {
+export function mergeIntervals(ranges: [number, number][]): [number, number][] {
   if (ranges.length === 0) return [];
   const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
   const out: [number, number][] = [];

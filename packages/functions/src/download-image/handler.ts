@@ -107,7 +107,7 @@ async function updateEpisode(
 /**
  * Extract file extension from URL or content type
  */
-function getFileExtension(url: string, contentType: string): string {
+export function getFileExtension(url: string, contentType: string): string {
   // Try to get from URL first
   try {
     const urlPath = new URL(url).pathname;
@@ -135,7 +135,7 @@ function getFileExtension(url: string, contentType: string): string {
 /**
  * Get MIME type from extension
  */
-function getMimeType(ext: string): string {
+export function getMimeType(ext: string): string {
   const extToMime: Record<string, string> = {
     jpg: "image/jpeg",
     jpeg: "image/jpeg",

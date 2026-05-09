@@ -1,10 +1,11 @@
 #!/bin/bash
+# Required env vars (source from .env.production or export manually):
+#   NARROWS_API_KEY, NARROWS_API_URL, TRANSCRIPT_INGEST_QUEUE_URL
 set -e
 
-# Configuration
-API_KEY="d470fa8f-4195-4cfa-9d44-a67b8f18533d"
-API_URL="https://narrows.audiopond.net"
-QUEUE_URL="https://sqs.us-east-1.amazonaws.com/897768183373/narrows-production-transcript-ingest"
+API_KEY="${NARROWS_API_KEY:?Set NARROWS_API_KEY (e.g. source .env.production)}"
+API_URL="${NARROWS_API_URL:?Set NARROWS_API_URL (e.g. source .env.production)}"
+QUEUE_URL="${TRANSCRIPT_INGEST_QUEUE_URL:?Set TRANSCRIPT_INGEST_QUEUE_URL (output of sst deploy)}"
 
 echo "=== Re-ingestion Script for All Episodes ==="
 echo "API: $API_URL"

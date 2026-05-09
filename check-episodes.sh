@@ -1,8 +1,10 @@
 #!/bin/bash
+# Required env vars (source from .env.production or export manually):
+#   NARROWS_API_KEY, NARROWS_API_URL
 set -e
 
-API_KEY="d470fa8f-4195-4cfa-9d44-a67b8f18533d"
-API_URL="https://narrows.audiopond.net"
+API_KEY="${NARROWS_API_KEY:?Set NARROWS_API_KEY (e.g. source .env.production)}"
+API_URL="${NARROWS_API_URL:?Set NARROWS_API_URL (e.g. source .env.production)}"
 
 echo "=== Getting all episodes ==="
 curl -s "${API_URL}/api/v1/episodes?limit=500" \

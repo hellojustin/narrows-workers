@@ -1,18 +1,22 @@
 #!/bin/bash
-# Full cleanup script before re-ingestion
+# Full cleanup script before re-ingestion.
 # This script:
 # 1. Cancels all pending/processing Graphiti jobs
 # 2. Clears the Graphiti graph
 # 3. Deletes all chapters and segments from Narrows
+#
+# Required env vars (source from .env.production or export manually):
+#   NARROWS_API_KEY, NARROWS_API_URL
+#   GRAPHITI_API_URL, GRAPHITI_GRAPH_ID
+#   TRANSCRIPT_INGEST_QUEUE_URL
 
 set -e
 
-# Configuration
-NARROWS_API_URL="https://narrows.audiopond.net"
-NARROWS_API_KEY="d470fa8f-4195-4cfa-9d44-a67b8f18533d"
-GRAPHITI_API_URL="http://graphiti.production.audiopond.net"
-GRAPHITI_GRAPH_ID="5683c474-61b6-4766-93de-9608316124dc"
-SQS_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/897768183373/narrows-production-transcript-ingest"
+NARROWS_API_KEY="${NARROWS_API_KEY:?Set NARROWS_API_KEY (e.g. source .env.production)}"
+NARROWS_API_URL="${NARROWS_API_URL:?Set NARROWS_API_URL (e.g. source .env.production)}"
+GRAPHITI_API_URL="${GRAPHITI_API_URL:?Set GRAPHITI_API_URL (e.g. source .env.production)}"
+GRAPHITI_GRAPH_ID="${GRAPHITI_GRAPH_ID:?Set GRAPHITI_GRAPH_ID (e.g. source .env.production)}"
+SQS_QUEUE_URL="${TRANSCRIPT_INGEST_QUEUE_URL:?Set TRANSCRIPT_INGEST_QUEUE_URL (output of sst deploy)}"
 
 echo "=========================================="
 echo "Full Cleanup Script"

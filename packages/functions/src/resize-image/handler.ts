@@ -9,7 +9,7 @@ const s3Client = new S3Client({});
  * Path format: /image/<media-id>.<format>
  * Query params: w (width), h (height)
  */
-function parseRequest(event: APIGatewayProxyEventV2): {
+export function parseRequest(event: APIGatewayProxyEventV2): {
   mediaId: string;
   format: "jpg" | "png" | "webp";
   width?: number;
@@ -23,8 +23,8 @@ function parseRequest(event: APIGatewayProxyEventV2): {
   }
 
   const mediaId = match[1];
-  let format = match[2].toLowerCase() as "jpg" | "png" | "webp";
-  if (format === "jpeg") format = "jpg";
+  const rawFormat = match[2].toLowerCase();
+  let format = (rawFormat === "jpeg" ? "jpg" : rawFormat) as "jpg" | "png" | "webp";
 
   const params = event.queryStringParameters || {};
   const width = params.w ? parseInt(params.w, 10) : undefined;
@@ -127,7 +127,7 @@ async function processImage(
 /**
  * Get content type for format
  */
-function getContentType(format: "jpg" | "png" | "webp"): string {
+export function getContentType(format: "jpg" | "png" | "webp"): string {
   switch (format) {
     case "png":
       return "image/png";

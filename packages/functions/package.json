@@ -15,6 +15,7 @@
     "node-vibrant": "^3.2.1-alpha.1",
     "openai": "^4.0.0",
     "rss-parser": "^3.13.0",
-    "sharp": "^0.33.0"
+    "sharp": "^0.33.0",
+    "uuid": "^8.0.0"
   }
 }

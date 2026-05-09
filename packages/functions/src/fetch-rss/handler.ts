@@ -14,6 +14,8 @@ const parser = new Parser({
       ["itunes:image", "itunesImage", { keepArray: false }],
       ["itunes:author", "itunesAuthor"],
     ],
+    // rss-parser types only allow simple string keys for feed customFields,
+    // but the library supports tuples at runtime (same as item fields)
     feed: [
       ["itunes:author", "itunesAuthor"],
       ["itunes:owner", "itunesOwner"],
@@ -26,7 +28,7 @@ const parser = new Parser({
       ["language", "language"],
       ["copyright", "copyright"],
       ["lastBuildDate", "lastBuildDate"],
-    ],
+    ] as any,
   },
 });
 
@@ -47,7 +49,7 @@ interface RssRefreshMessage {
  * Extract the image href from an itunes:image XML object.
  * rss-parser returns { $: { href: '...' } } for <itunes:image href="..." />.
  */
-function getItunesImageHref(itunesImage: unknown): string | undefined {
+export function getItunesImageHref(itunesImage: unknown): string | undefined {
   if (!itunesImage || typeof itunesImage !== "object") return undefined;
   const img = itunesImage as { $?: { href?: string }; href?: string };
   return img.$?.href || img.href;
@@ -56,7 +58,7 @@ function getItunesImageHref(itunesImage: unknown): string | undefined {
 /**
  * Heuristic: does a URL plausibly point to an image rather than a webpage?
  */
-function looksLikeImageUrl(url: string): boolean {
+export function looksLikeImageUrl(url: string): boolean {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
     if (pathname.endsWith("/")) return false;
@@ -71,7 +73,7 @@ function looksLikeImageUrl(url: string): boolean {
  * Pick the best image URL, preferring itunes:image when it looks like an
  * actual image URL, falling back to the standard RSS <image><url>.
  */
-function pickBestImageUrl(
+export function pickBestImageUrl(
   itunesImageData: unknown,
   rssImageUrl: string | undefined
 ): string | undefined {
@@ -83,7 +85,7 @@ function pickBestImageUrl(
 /**
  * Parse duration string (HH:MM:SS or MM:SS or seconds) to seconds
  */
-function parseDuration(duration: string | undefined): number | null {
+export function parseDuration(duration: string | undefined): number | null {
   if (!duration) return null;
 
   // If it's already a number, return it
@@ -133,7 +135,7 @@ async function fetchSeries(seriesId: string): Promise<SeriesData | null> {
 /**
  * Extract owner info from iTunes owner structure
  */
-function extractOwner(owner: unknown): { name?: string; email?: string } {
+export function extractOwner(owner: unknown): { name?: string; email?: string } {
   if (!owner || typeof owner !== "object") return {};
   const ownerObj = owner as {
     "itunes:name"?: string | string[];
@@ -152,7 +154,7 @@ function extractOwner(owner: unknown): { name?: string; email?: string } {
 /**
  * Extract categories from iTunes category structure (supports nested categories)
  */
-function extractCategories(itunesCategories: unknown[] | undefined): string[] {
+export function extractCategories(itunesCategories: unknown[] | undefined): string[] {
   const categories: string[] = [];
   if (!itunesCategories || !Array.isArray(itunesCategories)) return categories;
 
@@ -270,15 +272,14 @@ async function upsertEpisode(
       processingStatus = data[0].processingStatus || "pending";
       imageMediaId = data[0].imageMediaId || null;
       
-      // Update metadata only (exclude processingStatus to preserve existing state)
-      const { ...metadataOnly } = episodeData;
+      // Update metadata only (episodeData never contains processingStatus)
       await fetch(`${apiUrl}/api/v1/episodes/${episodeId}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(metadataOnly),
+        body: JSON.stringify(episodeData),
       });
     } else {
       // Create new episode with pending status
@@ -435,10 +436,10 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           description: item.contentSnippet || item.content,
           enclosureUrl: enclosure?.url,
           enclosureType: enclosure?.type,
-          enclosureLength: enclosure?.length ? parseInt(enclosure.length, 10) : undefined,
+          enclosureLength: enclosure?.length != null ? Number(enclosure.length) : undefined,
           link: item.link,
           imageUrl: pickBestImageUrl(item.itunesImage, undefined),
-          duration: parseDuration(item.itunesDuration as string | undefined),
+          duration: parseDuration(item.itunesDuration as string | undefined) ?? undefined,
           publishedAt: pubDate?.toISOString(),
           episodeNumber: item.itunesEpisode ? parseInt(item.itunesEpisode as string, 10) : undefined,
           seasonNumber: item.itunesSeason ? parseInt(item.itunesSeason as string, 10) : undefined,

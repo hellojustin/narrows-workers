@@ -33,7 +33,7 @@ interface SegmentIdentificationResult {
 /**
  * Get transcript text for a specific time range
  */
-function getTranscriptForRange(
+export function getTranscriptForRange(
   segments: TranscriptSegment[],
   startSec: number,
   endSec: number,
@@ -55,7 +55,7 @@ function getTranscriptForRange(
 /**
  * Assign segments to chapters based on overlap
  */
-function assignChapterToSegment(
+export function assignChapterToSegment(
   segmentStart: number,
   segmentEnd: number,
   chapters: Chapter[]

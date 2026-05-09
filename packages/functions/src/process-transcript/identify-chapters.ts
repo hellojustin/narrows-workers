@@ -29,7 +29,7 @@ interface ChapterIdentificationResult {
 /**
  * Build a condensed transcript view for the LLM
  */
-function buildTranscriptSummary(
+export function buildTranscriptSummary(
   segments: TranscriptSegment[],
   speakerData: SpeakerData
 ): string {
@@ -194,7 +194,7 @@ Please identify the chapters.`,
 /**
  * Create default chapters when identification fails
  */
-function createDefaultChapters(episodeId: string, duration: number): Chapter[] {
+export function createDefaultChapters(episodeId: string, duration: number): Chapter[] {
   // Create 3 basic chapters: intro, main, outro
   const introEnd = Math.min(60, duration * 0.1);
   const outroStart = Math.max(duration - 60, duration * 0.9);
@@ -233,7 +233,7 @@ function createDefaultChapters(episodeId: string, duration: number): Chapter[] {
 /**
  * Validate and fix chapter boundaries to ensure full coverage
  */
-function validateAndFixChapters(
+export function validateAndFixChapters(
   chapters: Chapter[],
   duration: number,
   episodeId: string

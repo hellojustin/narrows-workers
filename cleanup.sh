@@ -1,9 +1,15 @@
 #!/bin/bash
+# Deletes all chapters and segments for a single episode.
+#
+# Usage: ./cleanup.sh <episode-id>
+#
+# Required env vars (source from .env.production or export manually):
+#   NARROWS_API_KEY, NARROWS_API_URL
 set -e
 
-API_KEY="d470fa8f-4195-4cfa-9d44-a67b8f18533d"
-API_URL="https://narrows.audiopond.net"
-EPISODE_ID="e70dd7e9-90cb-4d57-a94f-acf74277793d"
+API_KEY="${NARROWS_API_KEY:?Set NARROWS_API_KEY (e.g. source .env.production)}"
+API_URL="${NARROWS_API_URL:?Set NARROWS_API_URL (e.g. source .env.production)}"
+EPISODE_ID="${1:?Usage: $0 <episode-id>}"
 
 echo "=== Getting chapters ==="
 CHAPTERS=$(curl -s "${API_URL}/api/v1/episodes/${EPISODE_ID}/chapters" \

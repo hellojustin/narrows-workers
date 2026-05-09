@@ -56,7 +56,7 @@ async function graphitiFetch(path: string, options: RequestInit = {}) {
 
 // ---- Score math ----
 
-function recencyDecay(dateStr: string | null): number {
+export function recencyDecay(dateStr: string | null): number {
   if (!dateStr) return 0;
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return 0;
@@ -64,7 +64,7 @@ function recencyDecay(dateStr: string | null): number {
   return Math.exp((-LN2 / RECENCY_HALF_LIFE_DAYS) * Math.max(daysAgo, 0));
 }
 
-function listenWeight(totalListenSec: number): number {
+export function listenWeight(totalListenSec: number): number {
   if (totalListenSec <= 0) return 0;
   // Logarithmic scaling so early minutes count most but long listens still accumulate.
   // 10 min → ~0.51, 30 min → ~0.73, 60 min → ~0.86, 120 min → ~0.95
@@ -111,7 +111,7 @@ interface EpisodeRanges {
  * Collect listened_ranges per episode across all summaries, unioning ranges
  * for the same episode listened to by different users.
  */
-function collectListenedRangesPerEpisode(summaries: SummaryRow[]): EpisodeRanges[] {
+export function collectListenedRangesPerEpisode(summaries: SummaryRow[]): EpisodeRanges[] {
   const byEpisode = new Map<string, [number, number][]>();
   for (const s of summaries) {
     const ranges = s.listened_ranges ?? [];

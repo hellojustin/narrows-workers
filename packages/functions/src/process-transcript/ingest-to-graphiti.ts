@@ -76,7 +76,7 @@ Write a brief contextual description for this segment.`,
 /**
  * Format timestamp as MM:SS
  */
-function formatTimestamp(seconds: number): string {
+export function formatTimestamp(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -148,7 +148,7 @@ function getActualTimeRange(segments: TranscriptSegment[]): { startSec: number; 
 /**
  * Ellipsize a string to max length
  */
-function ellipsize(str: string, maxLen: number): string {
+export function ellipsize(str: string, maxLen: number): string {
   if (str.length <= maxLen) return str;
   return str.slice(0, maxLen - 1) + '…';
 }
@@ -195,7 +195,7 @@ const AD_KEYWORD_PATTERNS: RegExp[] = [
 /**
  * Count how many ad keyword patterns match in the given text.
  */
-function countAdKeywordMatches(text: string): number {
+export function countAdKeywordMatches(text: string): number {
   return AD_KEYWORD_PATTERNS.filter((pattern) => pattern.test(text)).length;
 }
 
@@ -346,7 +346,7 @@ async function sendToGraphiti(
 /**
  * Chunk data if it exceeds the maximum size
  */
-function chunkData(data: string): string[] {
+export function chunkData(data: string): string[] {
   if (data.length <= MAX_DATA_CHARS) {
     return [data];
   }

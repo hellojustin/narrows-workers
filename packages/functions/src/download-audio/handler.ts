@@ -1,7 +1,6 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { Readable } from "stream";
 
 const s3Client = new S3Client({});
 const sqsClient = new SQSClient({});
@@ -124,7 +123,7 @@ async function updateMediaRecord(
 /**
  * Extract file extension from URL or content type
  */
-function getFileExtension(url: string, contentType: string): string {
+export function getFileExtension(url: string, contentType: string): string {
   // Try to get from URL first
   const urlPath = new URL(url).pathname;
   const urlExt = urlPath.split(".").pop()?.toLowerCase();
