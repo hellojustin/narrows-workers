@@ -14,6 +14,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "CheckStaleTranscriptions": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "DownloadAudio": {
       "name": string
       "type": "sst.aws.Function"
@@ -49,6 +53,11 @@ declare module "sst" {
     "OnTranscribeComplete": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "OnTranscriptionWebhook": {
+      "name": string
+      "type": "sst.aws.Function"
+      "url": string
     }
     "ProcessImage": {
       "name": string

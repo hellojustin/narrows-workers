@@ -148,7 +148,7 @@ export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebho
   timeout: "2 minutes",
   memory: "512 MB",
   url: {
-    authorization: "none", // Public access for AssemblyAI webhook (same pattern as resizeImage)
+    authorization: "none",
   },
   permissions: [
     {
@@ -166,6 +166,15 @@ export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebho
     TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
   },
   link: [transcriptIngestQueue],
+});
+
+// SST v3 doesn't add lambda:InvokeFunction for public function URLs (fixed in v4.2.6).
+// Without this, AWS returns 403 on accounts with the public access block enabled.
+new aws.lambda.Permission("OnTranscriptionWebhookPublicInvoke", {
+  function: `narrows-${$app.stage}-on-transcription-webhook`,
+  action: "lambda:InvokeFunction",
+  principal: "*",
+  statementId: "FunctionURLInvokeAllowPublicAccess",
 });
 
 // Check Stale Transcriptions - polls AssemblyAI for episodes stuck in processing
@@ -266,6 +275,9 @@ export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComple
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
+  logging: {
+    logGroup: `/aws/lambda/narrows-${$app.stage}-on-mediaconvert-complete`,
+  },
   environment: commonEnv,
 });
 
@@ -276,6 +288,9 @@ export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete",
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
+  logging: {
+    logGroup: `/aws/lambda/narrows-${$app.stage}-on-transcribe-complete`,
+  },
   environment: {
     ...commonEnv,
     TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
@@ -297,9 +312,9 @@ export const resizeImage = new sst.aws.Function("ResizeImage", {
   handler: "packages/functions/src/resize-image/handler.main",
   runtime: "nodejs20.x",
   timeout: "30 seconds",
-  memory: "1024 MB", // Image processing needs memory
+  memory: "1024 MB",
   url: {
-    authorization: "none", // Public access for CloudFront (no IAM auth required)
+    authorization: "none",
   },
   permissions: [
     {
@@ -309,8 +324,15 @@ export const resizeImage = new sst.aws.Function("ResizeImage", {
   ],
   environment: commonEnv,
   nodejs: {
-    install: ["sharp"], // Install sharp for Lambda (Linux) platform
+    install: ["sharp"],
   },
+});
+
+new aws.lambda.Permission("ResizeImagePublicInvoke", {
+  function: `narrows-${$app.stage}-resize-image`,
+  action: "lambda:InvokeFunction",
+  principal: "*",
+  statementId: "FunctionURLInvokeAllowPublicAccess",
 });
 
 // Ingest Listening Events - receives listening events from SQS and posts to narrows API
