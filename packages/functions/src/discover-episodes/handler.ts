@@ -113,7 +113,7 @@ async function seedTopic(
       {
         name: event.name,
         description: event.description,
-        granularity: 'event',
+        granularity: 3,
         source: `discovery-run:${runId}`,
       },
     );
