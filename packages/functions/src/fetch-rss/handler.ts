@@ -1,5 +1,5 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
 import Parser from "rss-parser";
 
 const sqsClient = new SQSClient({});
@@ -14,8 +14,6 @@ const parser = new Parser({
       ["itunes:image", "itunesImage", { keepArray: false }],
       ["itunes:author", "itunesAuthor"],
     ],
-    // rss-parser types only allow simple string keys for feed customFields,
-    // but the library supports tuples at runtime (same as item fields)
     feed: [
       ["itunes:author", "itunesAuthor"],
       ["itunes:owner", "itunesOwner"],
@@ -43,6 +41,20 @@ interface SeriesData {
 
 interface RssRefreshMessage {
   seriesId: string;
+}
+
+interface SyncResultItem {
+  id: string;
+  guid: string;
+  processingStatus: string | null;
+  imageMediaId: string | null;
+}
+
+interface SyncResponse {
+  data: {
+    created: SyncResultItem[];
+    existing: SyncResultItem[];
+  };
 }
 
 /**
@@ -88,12 +100,10 @@ export function pickBestImageUrl(
 export function parseDuration(duration: string | undefined): number | null {
   if (!duration) return null;
 
-  // If it's already a number, return it
   if (/^\d+$/.test(duration)) {
     return parseInt(duration, 10);
   }
 
-  // Parse HH:MM:SS or MM:SS format
   const parts = duration.split(":").map((p) => parseInt(p, 10));
   if (parts.length === 3) {
     return parts[0] * 3600 + parts[1] * 60 + parts[2];
@@ -102,34 +112,6 @@ export function parseDuration(duration: string | undefined): number | null {
   }
 
   return null;
-}
-
-/**
- * Fetch series data from Narrows API
- */
-async function fetchSeries(seriesId: string): Promise<SeriesData | null> {
-  const apiUrl = process.env.NARROWS_API_URL;
-  const apiKey = process.env.NARROWS_API_KEY;
-
-  if (!apiUrl || !apiKey) {
-    throw new Error("NARROWS_API_URL and NARROWS_API_KEY must be set");
-  }
-
-  const response = await fetch(`${apiUrl}/api/v1/series/${seriesId}`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      return null;
-    }
-    throw new Error(`Failed to fetch series: ${response.statusText}`);
-  }
-
-  const { data } = await response.json();
-  return data as SeriesData;
 }
 
 /**
@@ -172,7 +154,6 @@ export function extractCategories(itunesCategories: unknown[] | undefined): stri
       } else if (catObj._) {
         categories.push(catObj._);
       }
-      // Get nested subcategories
       if (catObj["itunes:category"]) {
         const subCategories = extractCategories(catObj["itunes:category"]);
         categories.push(...subCategories);
@@ -182,28 +163,30 @@ export function extractCategories(itunesCategories: unknown[] | undefined): stri
   return categories;
 }
 
-/**
- * Update series with ALL feed metadata
- */
+async function fetchSeries(seriesId: string): Promise<SeriesData | null> {
+  const apiUrl = process.env.NARROWS_API_URL;
+  const apiKey = process.env.NARROWS_API_KEY;
+
+  if (!apiUrl || !apiKey) {
+    throw new Error("NARROWS_API_URL and NARROWS_API_KEY must be set");
+  }
+
+  const response = await fetch(`${apiUrl}/api/v1/series/${seriesId}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) return null;
+    throw new Error(`Failed to fetch series: ${response.statusText}`);
+  }
+
+  const { data } = await response.json();
+  return data as SeriesData;
+}
+
 async function updateSeriesFromFeed(
   seriesId: string,
-  feedData: {
-    title?: string;
-    description?: string;
-    subtitle?: string;
-    author?: string;
-    ownerName?: string;
-    ownerEmail?: string;
-    language?: string;
-    imageUrl?: string;
-    websiteUrl?: string;
-    categories?: string[];
-    explicit?: boolean;
-    copyright?: string;
-    seriesType?: string;
-    lastBuildDate?: string;
-    lastFetchedAt?: string;
-  }
+  feedData: Record<string, unknown>
 ): Promise<void> {
   const apiUrl = process.env.NARROWS_API_URL;
   const apiKey = process.env.NARROWS_API_KEY;
@@ -223,139 +206,69 @@ async function updateSeriesFromFeed(
 }
 
 /**
- * Create or update episode via Narrows API
- * Returns the existing episode's processingStatus and imageMediaId
+ * Batch-sync episodes via the Narrows /episodes/sync endpoint.
+ * Replaces the per-episode upsert loop with a single HTTP call.
  */
-async function upsertEpisode(
+async function syncEpisodes(
   seriesId: string,
-  episodeData: {
-    guid: string;
-    title: string;
-    description?: string;
-    enclosureUrl?: string;
-    enclosureType?: string;
-    enclosureLength?: number;
-    link?: string;
-    imageUrl?: string;
-    duration?: number;
-    publishedAt?: string;
-    episodeNumber?: number;
-    seasonNumber?: number;
-    episodeType?: string;
-    explicit?: boolean;
-  }
-): Promise<{ id: string; created: boolean; processingStatus: string; imageMediaId: string | null }> {
+  episodes: Record<string, unknown>[]
+): Promise<SyncResponse> {
   const apiUrl = process.env.NARROWS_API_URL;
   const apiKey = process.env.NARROWS_API_KEY;
 
-  // First, check if episode exists by guid
-  const searchResponse = await fetch(
-    `${apiUrl}/api/v1/series/${seriesId}/episodes?guid=${encodeURIComponent(episodeData.guid)}`,
+  const response = await fetch(
+    `${apiUrl}/api/v1/series/${seriesId}/episodes/sync`,
     {
+      method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({ episodes }),
     }
   );
 
-  let episodeId: string;
-  let created = false;
-  let processingStatus = "pending";
-  let imageMediaId: string | null = null;
-
-  if (searchResponse.ok) {
-    const { data } = await searchResponse.json();
-    if (data && data.length > 0) {
-      // Episode already exists - DO NOT update processingStatus
-      // Only update metadata fields (title, description, etc.)
-      episodeId = data[0].id;
-      processingStatus = data[0].processingStatus || "pending";
-      imageMediaId = data[0].imageMediaId || null;
-      
-      // Update metadata only (episodeData never contains processingStatus)
-      await fetch(`${apiUrl}/api/v1/episodes/${episodeId}`, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(episodeData),
-      });
-    } else {
-      // Create new episode with pending status
-      const createResponse = await fetch(`${apiUrl}/api/v1/series/${seriesId}/episodes`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...episodeData,
-          processingStatus: "pending",
-        }),
-      });
-      const result = await createResponse.json();
-      episodeId = result.data.id;
-      created = true;
-      processingStatus = "pending";
-      imageMediaId = null;
-    }
-  } else {
-    throw new Error(`Failed to search episodes: ${searchResponse.statusText}`);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Episode sync failed (${response.status}): ${text}`);
   }
 
-  return { id: episodeId, created, processingStatus, imageMediaId };
+  return (await response.json()) as SyncResponse;
 }
 
 /**
- * Enqueue episode for audio download
+ * Send SQS messages in batches of 10 (the SendMessageBatch limit).
  */
-async function enqueueAudioDownload(episodeId: string): Promise<void> {
-  const queueUrl = process.env.AUDIO_DOWNLOAD_QUEUE_URL;
-  if (!queueUrl) {
-    throw new Error("AUDIO_DOWNLOAD_QUEUE_URL must be set");
-  }
-
-  await sqsClient.send(
-    new SendMessageCommand({
-      QueueUrl: queueUrl,
-      MessageBody: JSON.stringify({ episodeId }),
-    })
-  );
-}
-
-/**
- * Enqueue image for download (series or episode artwork)
- */
-async function enqueueImageDownload(
-  type: "series" | "episode",
-  id: string,
-  imageUrl: string
+async function sendSqsBatch(
+  queueUrl: string,
+  messages: { id: string; body: string }[]
 ): Promise<void> {
-  const queueUrl = process.env.IMAGE_DOWNLOAD_QUEUE_URL;
-  if (!queueUrl) {
-    console.warn("IMAGE_DOWNLOAD_QUEUE_URL not configured, skipping image download");
-    return;
+  for (let i = 0; i < messages.length; i += 10) {
+    const batch = messages.slice(i, i + 10);
+    await sqsClient.send(
+      new SendMessageBatchCommand({
+        QueueUrl: queueUrl,
+        Entries: batch.map((m) => ({
+          Id: m.id,
+          MessageBody: m.body,
+        })),
+      })
+    );
   }
-
-  await sqsClient.send(
-    new SendMessageCommand({
-      QueueUrl: queueUrl,
-      MessageBody: JSON.stringify({ type, id, imageUrl }),
-    })
-  );
 }
 
 /**
  * Fetch RSS Lambda
  *
- * Consumes from rss-refresh-queue
- * Fetches RSS feed from series.rss_url
- * Parses episodes and creates/updates Episode records
- * Enqueues episode IDs to audio-download-queue
+ * Consumes from rss-refresh-queue.
+ * 1. Fetches series info (1 API call)
+ * 2. Parses RSS feed (local)
+ * 3. Updates series metadata (1 API call)
+ * 4. Batch-syncs all episodes (1 API call)
+ * 5. Enqueues audio/image downloads via SQS batch sends
  */
 export const main: SQSHandler = async (event: SQSEvent) => {
-  console.log("Received event:", JSON.stringify(event, null, 2));
+  console.log(`Processing ${event.Records.length} RSS refresh message(s)`);
 
   for (const record of event.Records) {
     const message: RssRefreshMessage = JSON.parse(record.body);
@@ -363,7 +276,6 @@ export const main: SQSHandler = async (event: SQSEvent) => {
     console.log(`Processing RSS refresh for series: ${seriesId}`);
 
     try {
-      // 1. Fetch series from API
       const series = await fetchSeries(seriesId);
       if (!series) {
         console.error(`Series not found: ${seriesId}`);
@@ -375,18 +287,18 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         continue;
       }
 
-      // 2. Fetch and parse RSS feed
+      // Parse RSS feed
       console.log(`Fetching RSS feed: ${series.rss_url}`);
       const feed = await parser.parseURL(series.rss_url);
       console.log(`Found ${feed.items.length} items in feed`);
 
-      // 3. Update series metadata from feed with ALL available fields
+      // Update series metadata
       const owner = extractOwner(feed.itunesOwner);
       const categories = extractCategories(feed.itunesCategories as unknown[] | undefined);
       const itunesType = feed.itunesType as string | undefined;
       const seriesType = itunesType === "serial" ? "serial" : "episodic";
-
       const seriesImageUrl = pickBestImageUrl(feed.itunesImage, feed.image?.url);
+
       await updateSeriesFromFeed(seriesId, {
         title: feed.title || series.title,
         description: feed.description || (feed.itunesSummary as string | undefined),
@@ -398,39 +310,25 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         imageUrl: seriesImageUrl,
         websiteUrl: feed.link,
         categories: categories.length > 0 ? categories : undefined,
-        explicit: (feed.itunesExplicit as string) === "yes" || 
-                  (feed.itunesExplicit as string) === "true",
+        explicit:
+          (feed.itunesExplicit as string) === "yes" ||
+          (feed.itunesExplicit as string) === "true",
         copyright: feed.copyright as string | undefined,
         seriesType,
         lastBuildDate: feed.lastBuildDate as string | undefined,
         lastFetchedAt: new Date().toISOString(),
       });
 
-      // 3.5. Enqueue series image download if no image yet or artwork URL changed
-      if (seriesImageUrl && (!series.icon_media_id || seriesImageUrl !== series.image_url)) {
-        await enqueueImageDownload("series", seriesId, seriesImageUrl);
-        console.log(`Enqueued series image download: ${seriesImageUrl}`);
-      }
-
-      // 4. Process episodes
+      // Filter episodes by cutoff date and build batch payload
       const cutoffDate = new Date(series.episode_cutoff_date);
-      let processedCount = 0;
-      let enqueuedCount = 0;
+      const episodeBatch: Record<string, unknown>[] = [];
 
       for (const item of feed.items) {
         const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+        if (pubDate && pubDate < cutoffDate) continue;
 
-        // Skip episodes older than cutoff date
-        if (pubDate && pubDate < cutoffDate) {
-          console.log(`Skipping episode "${item.title}" - older than cutoff date`);
-          continue;
-        }
-
-        // Extract enclosure data
         const enclosure = item.enclosure;
-
-        // Prepare episode data (without processingStatus - that's managed separately)
-        const episodeData = {
+        episodeBatch.push({
           guid: item.guid || item.link || item.title || "",
           title: item.title || "Untitled Episode",
           description: item.contentSnippet || item.content,
@@ -445,33 +343,98 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           seasonNumber: item.itunesSeason ? parseInt(item.itunesSeason as string, 10) : undefined,
           episodeType: (item.itunesEpisodeType as string) || "full",
           explicit: (item.itunesExplicit as string) === "yes",
-        };
+        });
+      }
 
-        // Create or update episode (preserves existing processingStatus)
-        const { id: episodeId, created, processingStatus, imageMediaId: episodeImageMediaId } = await upsertEpisode(seriesId, episodeData);
-        processedCount++;
+      if (episodeBatch.length === 0) {
+        console.log("No episodes after cutoff filter");
+        continue;
+      }
 
-        // Enqueue for audio download if:
-        // 1. Newly created episode with an enclosure URL, OR
-        // 2. Existing episode still in 'pending' status (not yet processed)
-        const shouldEnqueueAudio = enclosure?.url && (created || processingStatus === "pending");
-        if (shouldEnqueueAudio) {
-          await enqueueAudioDownload(episodeId);
-          enqueuedCount++;
-          console.log(`Enqueued episode "${item.title}" for audio download (created: ${created}, status: ${processingStatus})`);
-        }
+      // Single API call to sync all episodes
+      console.log(`Syncing ${episodeBatch.length} episodes...`);
+      const syncResult = await syncEpisodes(seriesId, episodeBatch);
 
-        // Enqueue for image download if episode has an image URL but no imageMediaId
-        const episodeImageUrl = episodeData.imageUrl;
-        if (episodeImageUrl && !episodeImageMediaId) {
-          await enqueueImageDownload("episode", episodeId, episodeImageUrl);
-          console.log(`Enqueued episode "${item.title}" for image download`);
+      const { created, existing } = syncResult.data;
+      console.log(`Sync complete: ${created.length} created, ${existing.length} existing`);
+
+      // Enqueue audio downloads for new episodes + pending existing ones
+      const audioQueueUrl = process.env.AUDIO_DOWNLOAD_QUEUE_URL;
+      if (audioQueueUrl) {
+        const episodeGuidsWithEnclosure = new Set(
+          episodeBatch
+            .filter((ep) => ep.enclosureUrl)
+            .map((ep) => ep.guid as string)
+        );
+
+        const toDownload = [
+          ...created.filter((ep) => episodeGuidsWithEnclosure.has(ep.guid)),
+          ...existing.filter(
+            (ep) =>
+              ep.processingStatus === "pending" &&
+              episodeGuidsWithEnclosure.has(ep.guid)
+          ),
+        ];
+
+        if (toDownload.length > 0) {
+          await sendSqsBatch(
+            audioQueueUrl,
+            toDownload.map((ep, i) => ({
+              id: `audio-${i}`,
+              body: JSON.stringify({ episodeId: ep.id }),
+            }))
+          );
+          console.log(`Enqueued ${toDownload.length} episodes for audio download`);
         }
       }
 
-      console.log(
-        `Processed ${processedCount} episodes, enqueued ${enqueuedCount} for audio download`
-      );
+      // Enqueue image downloads for episodes without an imageMediaId
+      const imageQueueUrl = process.env.IMAGE_DOWNLOAD_QUEUE_URL;
+      if (imageQueueUrl) {
+        const episodeImageMap = new Map(
+          episodeBatch
+            .filter((ep) => ep.imageUrl)
+            .map((ep) => [ep.guid as string, ep.imageUrl as string])
+        );
+
+        const allEpisodes = [...created, ...existing];
+        const needsImage = allEpisodes.filter(
+          (ep) => !ep.imageMediaId && episodeImageMap.has(ep.guid)
+        );
+
+        if (needsImage.length > 0) {
+          await sendSqsBatch(
+            imageQueueUrl,
+            needsImage.map((ep, i) => ({
+              id: `img-${i}`,
+              body: JSON.stringify({
+                type: "episode",
+                id: ep.id,
+                imageUrl: episodeImageMap.get(ep.guid),
+              }),
+            }))
+          );
+          console.log(`Enqueued ${needsImage.length} episodes for image download`);
+        }
+
+        // Series image download if needed
+        if (
+          seriesImageUrl &&
+          (!series.icon_media_id || seriesImageUrl !== series.image_url)
+        ) {
+          await sendSqsBatch(imageQueueUrl, [
+            {
+              id: "series-img",
+              body: JSON.stringify({
+                type: "series",
+                id: seriesId,
+                imageUrl: seriesImageUrl,
+              }),
+            },
+          ]);
+          console.log(`Enqueued series image download: ${seriesImageUrl}`);
+        }
+      }
     } catch (error) {
       console.error(`Error processing series ${seriesId}:`, error);
       throw error;

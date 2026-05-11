@@ -1,5 +1,6 @@
 /**
- * Lambda function definitions for the ingestion pipeline
+ * Lambda function definitions for the ingestion pipeline.
+ * All functions have reserved concurrency of 1 to prevent thundering herd.
  */
 
 import { mediaBucketName } from "./storage";
@@ -11,6 +12,7 @@ import {
   processingQueue,
   transcriptIngestQueue,
   listeningEventsQueue,
+  discoveryQueue,
 } from "./queues";
 
 // VPC configuration for Lambda functions
@@ -30,20 +32,21 @@ const commonEnv = {
   NARROWS_API_KEY: process.env.NARROWS_API_KEY ?? "",
 };
 
-// Fetch RSS - fetches and parses RSS feeds, creates/updates episodes
+// Fetch RSS - fetches and parses RSS feeds, batch-syncs episodes
 export const fetchRss = new sst.aws.Function("FetchRss", {
   name: `narrows-${$app.stage}-fetch-rss`,
   handler: "packages/functions/src/fetch-rss/handler.main",
   runtime: "nodejs20.x",
   timeout: "2 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
       resources: [rssRefreshQueue.arn],
     },
     {
-      actions: ["sqs:SendMessage"],
+      actions: ["sqs:SendMessage", "sqs:SendMessageBatch"],
       resources: [audioDownloadQueue.arn, imageDownloadQueue.arn],
     },
   ],
@@ -63,6 +66,7 @@ export const downloadAudio = new sst.aws.Function("DownloadAudio", {
   runtime: "nodejs20.x",
   timeout: "10 minutes",
   memory: "1024 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["s3:PutObject", "s3:GetObject"],
@@ -92,6 +96,7 @@ export const downloadImage = new sst.aws.Function("DownloadImage", {
   runtime: "nodejs20.x",
   timeout: "5 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["s3:PutObject", "s3:GetObject"],
@@ -121,7 +126,8 @@ export const processImage = new sst.aws.Function("ProcessImage", {
   handler: "packages/functions/src/process-image/handler.main",
   runtime: "nodejs20.x",
   timeout: "5 minutes",
-  memory: "1024 MB", // Image processing needs more memory
+  memory: "1024 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["s3:GetObject", "s3:PutObject"],
@@ -134,7 +140,7 @@ export const processImage = new sst.aws.Function("ProcessImage", {
   ],
   environment: commonEnv,
   nodejs: {
-    install: ["sharp", "node-vibrant"], // Install native modules for Lambda (Linux) platform
+    install: ["sharp", "node-vibrant"],
   },
 });
 imageProcessingQueue.subscribe(processImage.arn);
@@ -147,6 +153,7 @@ export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebho
   runtime: "nodejs20.x",
   timeout: "2 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   url: {
     authorization: "none",
   },
@@ -185,6 +192,7 @@ export const checkStaleTranscriptions = new sst.aws.Function("CheckStaleTranscri
   runtime: "nodejs20.x",
   timeout: "5 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["s3:PutObject"],
@@ -210,6 +218,7 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
   runtime: "nodejs20.x",
   timeout: "2 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["mediaconvert:CreateJob", "mediaconvert:DescribeEndpoints"],
@@ -233,20 +242,20 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     MEDIACONVERT_ENDPOINT: process.env.MEDIACONVERT_ENDPOINT ?? "",
     MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
-    ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url, // SST resolves this at deploy time
+    ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url,
   },
 });
 processingQueue.subscribe(startProcessing.arn);
 
 // Process Transcript - identifies speakers, chapters, segments and sends to Graphiti
 // Runs in VPC to access internal Graphiti service
-// (Previously named ingest-transcript)
 export const processTranscript = new sst.aws.Function("ProcessTranscript", {
   name: `narrows-${$app.stage}-process-transcript`,
   handler: "packages/functions/src/process-transcript/handler.main",
   runtime: "nodejs20.x",
-  timeout: "15 minutes", // Increased for LLM processing
+  timeout: "15 minutes",
   memory: "1024 MB",
+  concurrency: { reserved: 1 },
   vpc: vpcConfig,
   permissions: [
     {
@@ -275,6 +284,7 @@ export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComple
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
+  concurrency: { reserved: 1 },
   logging: {
     logGroup: `/aws/lambda/narrows-${$app.stage}-on-mediaconvert-complete`,
   },
@@ -288,6 +298,7 @@ export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete",
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
+  concurrency: { reserved: 1 },
   logging: {
     logGroup: `/aws/lambda/narrows-${$app.stage}-on-transcribe-complete`,
   },
@@ -305,7 +316,6 @@ export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete",
 });
 
 // Resize Image - on-demand image resizing for CloudFront
-// This Lambda provides a Function URL that CloudFront can call for /image/* requests
 // Uses sharp which requires platform-specific installation for Lambda
 export const resizeImage = new sst.aws.Function("ResizeImage", {
   name: `narrows-${$app.stage}-resize-image`,
@@ -313,6 +323,7 @@ export const resizeImage = new sst.aws.Function("ResizeImage", {
   runtime: "nodejs20.x",
   timeout: "30 seconds",
   memory: "1024 MB",
+  concurrency: { reserved: 1 },
   url: {
     authorization: "none",
   },
@@ -342,6 +353,7 @@ export const ingestListeningEvents = new sst.aws.Function("IngestListeningEvents
   runtime: "nodejs20.x",
   timeout: "1 minute",
   memory: "256 MB",
+  concurrency: { reserved: 1 },
   permissions: [
     {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
@@ -360,6 +372,7 @@ export const rollupListening = new sst.aws.Function("RollupListening", {
   runtime: "nodejs20.x",
   timeout: "5 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   environment: commonEnv,
 });
 
@@ -373,6 +386,7 @@ export const buildTasteProfiles = new sst.aws.Function("BuildTasteProfiles", {
   runtime: "nodejs20.x",
   timeout: "10 minutes",
   memory: "512 MB",
+  concurrency: { reserved: 1 },
   vpc: vpcConfig,
   environment: {
     ...commonEnv,
@@ -381,6 +395,42 @@ export const buildTasteProfiles = new sst.aws.Function("BuildTasteProfiles", {
     GRAPHITI_GRAPH_ID: process.env.GRAPHITI_GRAPH_ID ?? "",
   },
 });
+
+// Discover Episodes - LLM-driven current-events podcast discovery
+// Uses OpenAI Responses API (web_search) + PodcastIndex to find relevant episodes,
+// then upserts series/episodes in Narrows and seeds topics in Graphiti.
+export const discoverEpisodes = new sst.aws.Function("DiscoverEpisodes", {
+  name: `narrows-${$app.stage}-discover-episodes`,
+  handler: "packages/functions/src/discover-episodes/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "10 minutes",
+  memory: "1024 MB",
+  concurrency: { reserved: 1 },
+  vpc: vpcConfig,
+  permissions: [
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [discoveryQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [audioDownloadQueue.arn, imageDownloadQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
+    PODCASTINDEX_API_KEY: process.env.PODCASTINDEX_API_KEY ?? "",
+    PODCASTINDEX_API_SECRET: process.env.PODCASTINDEX_API_SECRET ?? "",
+    GRAPHITI_API_URL: process.env.GRAPHITI_API_URL ?? "",
+    GRAPHITI_API_KEY: process.env.GRAPHITI_API_KEY ?? "",
+    GRAPHITI_GRAPH_ID: process.env.GRAPHITI_GRAPH_ID ?? "",
+    AUDIO_DOWNLOAD_QUEUE_URL: audioDownloadQueue.url,
+    IMAGE_DOWNLOAD_QUEUE_URL: imageDownloadQueue.url,
+  },
+  link: [audioDownloadQueue, imageDownloadQueue],
+});
+discoveryQueue.subscribe(discoverEpisodes.arn);
 
 // Export the Lambda ARNs for EventBridge rule setup
 export const lambdaArns = {

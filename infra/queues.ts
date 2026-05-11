@@ -1,80 +1,121 @@
 /**
- * SQS Queue definitions for the ingestion pipeline
+ * SQS Queue definitions for the ingestion pipeline.
+ * Every queue has a dead-letter queue (DLQ) to cap retries and prevent
+ * infinite retry storms.
  */
 
-// Queue for triggering RSS feed refreshes
+// --- Dead-letter queues ---
+
+const rssRefreshDlq = new sst.aws.Queue("RssRefreshDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-rss-refresh-dlq` } },
+});
+
+const audioDownloadDlq = new sst.aws.Queue("AudioDownloadDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-audio-download-dlq` } },
+});
+
+const imageDownloadDlq = new sst.aws.Queue("ImageDownloadDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-image-download-dlq` } },
+});
+
+const imageProcessingDlq = new sst.aws.Queue("ImageProcessingDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-image-processing-dlq` } },
+});
+
+const processingDlq = new sst.aws.Queue("ProcessingDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-processing-dlq` } },
+});
+
+const transcriptIngestDlq = new sst.aws.Queue("TranscriptIngestDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-transcript-ingest-dlq` } },
+});
+
+const listeningEventsDlq = new sst.aws.Queue("ListeningEventsDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-listening-events-dlq` } },
+});
+
+const discoveryDlq = new sst.aws.Queue("DiscoveryDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-discovery-dlq` } },
+});
+
+// --- Primary queues ---
+
 export const rssRefreshQueue = new sst.aws.Queue("RssRefreshQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
+  dlq: { retry: 3, queue: rssRefreshDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-rss-refresh`,
-    },
+    queue: { name: `narrows-${$app.stage}-rss-refresh` },
   },
 });
 
-// Queue for downloading audio files
 export const audioDownloadQueue = new sst.aws.Queue("AudioDownloadQueue", {
   fifo: false,
-  visibilityTimeout: "10 minutes", // Downloads can take a while
+  visibilityTimeout: "10 minutes",
+  dlq: { retry: 3, queue: audioDownloadDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-audio-download`,
-    },
+    queue: { name: `narrows-${$app.stage}-audio-download` },
   },
 });
 
-// Queue for downloading image files (series and episode artwork)
 export const imageDownloadQueue = new sst.aws.Queue("ImageDownloadQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
+  dlq: { retry: 3, queue: imageDownloadDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-image-download`,
-    },
+    queue: { name: `narrows-${$app.stage}-image-download` },
   },
 });
 
-// Queue for processing downloaded images (converting to base formats)
 export const imageProcessingQueue = new sst.aws.Queue("ImageProcessingQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
+  dlq: { retry: 3, queue: imageProcessingDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-image-processing`,
-    },
+    queue: { name: `narrows-${$app.stage}-image-processing` },
   },
 });
 
-// Queue for starting MediaConvert and AssemblyAI transcription
 export const processingQueue = new sst.aws.Queue("ProcessingQueue", {
   fifo: false,
   visibilityTimeout: "2 minutes",
+  dlq: { retry: 3, queue: processingDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-processing`,
-    },
+    queue: { name: `narrows-${$app.stage}-processing` },
   },
 });
 
-// Queue for ingesting transcripts into Graphiti
 export const transcriptIngestQueue = new sst.aws.Queue("TranscriptIngestQueue", {
   fifo: false,
-  visibilityTimeout: "16 minutes", // Must be >= Lambda timeout (15 min) + buffer
+  visibilityTimeout: "16 minutes",
+  dlq: { retry: 3, queue: transcriptIngestDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-transcript-ingest`,
-    },
+    queue: { name: `narrows-${$app.stage}-transcript-ingest` },
   },
 });
 
-// Queue for ingesting listening events from the narrows API
 export const listeningEventsQueue = new sst.aws.Queue("ListeningEventsQueue", {
   fifo: false,
   visibilityTimeout: "2 minutes",
+  dlq: { retry: 3, queue: listeningEventsDlq.arn },
   transform: {
-    queue: {
-      name: `narrows-${$app.stage}-listening-events`,
-    },
+    queue: { name: `narrows-${$app.stage}-listening-events` },
+  },
+});
+
+export const discoveryQueue = new sst.aws.Queue("DiscoveryQueue", {
+  fifo: false,
+  visibilityTimeout: "10 minutes",
+  dlq: { retry: 3, queue: discoveryDlq.arn },
+  transform: {
+    queue: { name: `narrows-${$app.stage}-discovery` },
   },
 });

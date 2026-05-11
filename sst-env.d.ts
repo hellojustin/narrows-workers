@@ -6,6 +6,10 @@
 
 declare module "sst" {
   export interface Resource {
+    "AudioDownloadDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "AudioDownloadQueue": {
       "type": "sst.aws.Queue"
       "url": string
@@ -17,6 +21,18 @@ declare module "sst" {
     "CheckStaleTranscriptions": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "DiscoverEpisodes": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "DiscoveryDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "DiscoveryQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
     }
     "DownloadAudio": {
       "name": string
@@ -30,7 +46,15 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "ImageDownloadDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "ImageDownloadQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "ImageProcessingDlq": {
       "type": "sst.aws.Queue"
       "url": string
     }
@@ -41,6 +65,10 @@ declare module "sst" {
     "IngestListeningEvents": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "ListeningEventsDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
     }
     "ListeningEventsQueue": {
       "type": "sst.aws.Queue"
@@ -67,6 +95,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "ProcessingDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "ProcessingQueue": {
       "type": "sst.aws.Queue"
       "url": string
@@ -80,6 +112,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "RssRefreshDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "RssRefreshQueue": {
       "type": "sst.aws.Queue"
       "url": string
@@ -87,6 +123,10 @@ declare module "sst" {
     "StartProcessing": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "TranscriptIngestDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
     }
     "TranscriptIngestQueue": {
       "type": "sst.aws.Queue"

@@ -12,7 +12,7 @@
  * doesn't have native support for EventBridge rule subscriptions to the default bus.
  */
 
-import { rollupListening, buildTasteProfiles, checkStaleTranscriptions } from "./functions";
+import { rollupListening, buildTasteProfiles, checkStaleTranscriptions, discoverEpisodes } from "./functions";
 
 // Placeholder export to satisfy the import in sst.config.ts
 export const eventBridgeConfig = {
@@ -49,4 +49,12 @@ export const tasteProfileSchedule = new sst.aws.Cron("TasteProfileSchedule", {
 export const staleTranscriptionSchedule = new sst.aws.Cron("StaleTranscriptionSchedule", {
   schedule: "rate(15 minutes)",
   function: checkStaleTranscriptions.arn,
+});
+
+// LLM-driven current-events podcast discovery
+// Loads active DiscoveryPrompts from Narrows, runs web-search + PodcastIndex lookups,
+// upserts series/episodes, and seeds topics in Graphiti.
+export const discoverySchedule = new sst.aws.Cron("DiscoverySchedule", {
+  schedule: "rate(30 minutes)",
+  function: discoverEpisodes.arn,
 });
