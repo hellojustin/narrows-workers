@@ -1,34 +1,8 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { SQSClient, SendMessageBatchCommand } from "@aws-sdk/client-sqs";
-import Parser from "rss-parser";
+import { rssParser as parser } from "../shared/rss-parser";
 
 const sqsClient = new SQSClient({});
-const parser = new Parser({
-  customFields: {
-    item: [
-      ["itunes:duration", "itunesDuration"],
-      ["itunes:episode", "itunesEpisode"],
-      ["itunes:season", "itunesSeason"],
-      ["itunes:episodeType", "itunesEpisodeType"],
-      ["itunes:explicit", "itunesExplicit"],
-      ["itunes:image", "itunesImage", { keepArray: false }],
-      ["itunes:author", "itunesAuthor"],
-    ],
-    feed: [
-      ["itunes:author", "itunesAuthor"],
-      ["itunes:owner", "itunesOwner"],
-      ["itunes:image", "itunesImage", { keepArray: false }],
-      ["itunes:explicit", "itunesExplicit"],
-      ["itunes:category", "itunesCategories", { keepArray: true }],
-      ["itunes:type", "itunesType"],
-      ["itunes:subtitle", "itunesSubtitle"],
-      ["itunes:summary", "itunesSummary"],
-      ["language", "language"],
-      ["copyright", "copyright"],
-      ["lastBuildDate", "lastBuildDate"],
-    ] as any,
-  },
-});
 
 interface SeriesData {
   id: string;

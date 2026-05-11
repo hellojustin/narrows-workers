@@ -17,6 +17,7 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import OpenAI from 'openai';
 import { findPodcastRss } from './tools/find-podcast-rss';
 import { matchEpisode } from './match-episode';
+import { validateFeed } from './validate-feed';
 import type {
   DiscoveredEvent,
   DiscoveredPodcast,
@@ -468,16 +469,14 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
     // Generate a pseudo run-id for topic source tracing
     const runId = `${promptRecord.id}-${Date.now()}`;
 
-    // Seed topics in Graphiti for each event
-    for (const event of discoveryResult.events) {
-      const created = await seedTopic(event, runId);
-      if (created) topicSeedsCreated++;
-    }
+    // Build a lookup so we can seed a topic the first time content is confirmed for it
+    const eventsByName = new Map(discoveryResult.events.map((e) => [e.name, e]));
+    const seededEvents = new Set<string>();
 
-    // Process each podcast
+    // Process each podcast — validate & match episode first, only then create series
     for (const podcast of discoveryResult.podcasts) {
       try {
-        // Validate the RSS URL is reachable before creating anything
+        // Validate the RSS URL is reachable before doing anything
         try {
           const headRes = await fetch(podcast.rssUrl, { method: 'HEAD', redirect: 'follow' });
           if (!headRes.ok) {
@@ -493,17 +492,16 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
           continue;
         }
 
-        // Upsert the series (autoIngest=false)
-        const { id: seriesId, created, imageUrl } = await upsertSeries(podcast.rssUrl);
-        if (created) {
-          seriesCreated++;
-          if (imageUrl) {
-            await enqueueImageDownload('series', seriesId, imageUrl);
-            console.log(`Enqueued series image download for "${podcast.podcastName}"`);
-          }
+        // Validate the feed (image, owner email, AI-generated check)
+        const validation = await validateFeed(podcast.rssUrl);
+        if (!validation.valid) {
+          console.warn(
+            `Skipping "${podcast.podcastName}": feed validation failed — ${validation.reasons.join('; ')}`,
+          );
+          continue;
         }
 
-        // Find the matching episode in the RSS feed
+        // Match the episode in the RSS feed BEFORE creating anything
         const matchedEp = await matchEpisode(podcast.rssUrl, podcast, {
           windowHours: 168,
           scoreThreshold: 0.5,
@@ -517,6 +515,16 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
             `This may indicate a hallucinated episode title.`,
           );
           continue;
+        }
+
+        // Now that we have a confirmed episode, upsert the series
+        const { id: seriesId, created, imageUrl } = await upsertSeries(podcast.rssUrl);
+        if (created) {
+          seriesCreated++;
+          if (imageUrl) {
+            await enqueueImageDownload('series', seriesId, imageUrl);
+            console.log(`Enqueued series image download for "${podcast.podcastName}"`);
+          }
         }
 
         // Dedup by guid
@@ -535,6 +543,14 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
         // Enqueue for audio download
         await enqueueAudioDownload(episodeId);
         console.log(`Enqueued episode: ${matchedEp.title} (${episodeId})`);
+
+        // Seed the related topic now that we have confirmed content for it
+        const event = eventsByName.get(podcast.relatedEvent);
+        if (event && !seededEvents.has(event.name)) {
+          const created = await seedTopic(event, runId);
+          if (created) topicSeedsCreated++;
+          seededEvents.add(event.name);
+        }
       } catch (podcastErr) {
         console.error(`Error processing podcast "${podcast.podcastName}":`, podcastErr);
       }

@@ -1,4 +1,4 @@
-import Parser from 'rss-parser';
+import { rssParser } from '../shared/rss-parser';
 import { pickBestImageUrl } from '../fetch-rss/handler';
 import type { DiscoveredPodcast } from './types';
 
@@ -25,18 +25,6 @@ export interface MatchedEpisode {
   duration: number | null;
   score: number;
 }
-
-const rssParser = new Parser({
-  customFields: {
-    item: [
-      ['itunes:image', 'itunesImage'],
-      ['itunes:duration', 'itunesDuration'],
-      ['itunes:episode', 'itunesEpisode'],
-      ['itunes:season', 'itunesSeason'],
-      ['itunes:explicit', 'itunesExplicit'],
-    ],
-  },
-});
 
 /**
  * Normalized Levenshtein distance (0 = identical, 1 = completely different).
