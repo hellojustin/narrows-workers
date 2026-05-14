@@ -242,8 +242,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       console.log(`Successfully processed image for ${type} ${entityId}`);
     } catch (error) {
       console.error(`Error processing image for ${type} ${entityId}:`, error);
-      // Don't throw - image processing failures shouldn't cause retries that could
-      // result in duplicate processing. Log the error and move on.
+      throw error;
     }
   }
 };

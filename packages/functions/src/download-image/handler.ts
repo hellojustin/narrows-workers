@@ -276,8 +276,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       console.log(`Successfully processed image for ${type}: ${id}`);
     } catch (error) {
       console.error(`Error downloading image for ${type} ${id}:`, error);
-      // Don't throw - image download failures shouldn't block the pipeline
-      // The imageMediaId will remain null and we can retry later
+      throw error;
     }
   }
 };
