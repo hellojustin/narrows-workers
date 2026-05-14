@@ -1,0 +1,12 @@
+Search the web for 3-5 well-known podcast episodes that have discussed the following
+news story in the past 3 days:
+
+Story: {{headline}}
+{{summary}}
+
+Requirements:
+- Only include episodes published in the last 3 days.
+- Strongly prefer established, high-audience shows from major networks (NPR, NYT, Vox,
+  The Ringer, Wondery, iHeart, Pushkin, Crooked Media, etc.). Avoid niche or indie shows.
+- Use the exact episode title as published — do not paraphrase or invent titles.
+- Set headline to exactly: {{headline}}

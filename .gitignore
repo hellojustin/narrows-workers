@@ -22,6 +22,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Script output (cached stage results)
+scripts/output/
+
 # Logs
 *.log
 npm-debug.log*

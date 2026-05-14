@@ -44,17 +44,34 @@ export async function findPodcastRss(query: string): Promise<PodcastFeed[]> {
 
   const url = `https://api.podcastindex.org/api/1.0/search/byterm?q=${encodeURIComponent(query)}&max=10`;
 
-  const response = await fetch(url, {
-    headers: {
-      'X-Auth-Key': apiKey,
-      'X-Auth-Date': String(authTime),
-      Authorization: authHash,
-      'User-Agent': 'Audiopond/1.0',
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        'X-Auth-Key': apiKey,
+        'X-Auth-Date': String(authTime),
+        Authorization: authHash,
+        'User-Agent': 'Audiopond/1.0',
+      },
+    });
+  } catch (fetchErr) {
+    const cause = fetchErr instanceof Error ? (fetchErr.cause ?? fetchErr.message) : fetchErr;
+    throw new Error(
+      `PodcastIndex fetch failed for "${query}"\n` +
+      `  URL: ${url}\n` +
+      `  Cause: ${cause}`,
+    );
+  }
 
   if (!response.ok) {
-    throw new Error(`PodcastIndex API error: ${response.status} ${response.statusText}`);
+    const body = await response.text().catch(() => '(could not read body)');
+    throw new Error(
+      `PodcastIndex API error: ${response.status} ${response.statusText}\n` +
+      `  URL: ${url}\n` +
+      `  Auth-Key: ${apiKey.slice(0, 6)}…\n` +
+      `  Auth-Date: ${authTime}\n` +
+      `  Response body: ${body}`,
+    );
   }
 
   const data = (await response.json()) as PodcastSearchResult;

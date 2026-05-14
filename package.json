@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:prompt": "NODE_OPTIONS='--disable-warning=DEP0040' dotenv --no-expand -e .env.production -- tsx scripts/test-discovery-prompt.ts"
   },
   "workspaces": [
     "packages/*"
