@@ -127,7 +127,7 @@ export const processImage = new sst.aws.Function("ProcessImage", {
   runtime: "nodejs20.x",
   timeout: "5 minutes",
   memory: "1024 MB",
-  concurrency: { reserved: 1 },
+  concurrency: { reserved: 3 },
   permissions: [
     {
       actions: ["s3:GetObject", "s3:PutObject"],
