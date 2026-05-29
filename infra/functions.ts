@@ -1,6 +1,9 @@
 /**
  * Lambda function definitions for the ingestion pipeline.
- * All functions have reserved concurrency of 1 to prevent thundering herd.
+ * Concurrency is tuned per-function based on expected throughput and
+ * downstream capacity. All SQS-triggered handlers use batch size 1
+ * (one message per Lambda invocation) to avoid batch poisoning and
+ * simplify error handling.
  */
 
 import { mediaBucketName } from "./storage";
@@ -13,6 +16,7 @@ import {
   transcriptIngestQueue,
   listeningEventsQueue,
   discoveryQueue,
+  subtitleGenerationQueue,
 } from "./queues";
 
 // VPC configuration for Lambda functions
@@ -39,7 +43,7 @@ export const fetchRss = new sst.aws.Function("FetchRss", {
   runtime: "nodejs20.x",
   timeout: "2 minutes",
   memory: "512 MB",
-  concurrency: { reserved: 1 },
+  concurrency: { reserved: 3 },
   permissions: [
     {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
@@ -57,7 +61,9 @@ export const fetchRss = new sst.aws.Function("FetchRss", {
   },
   link: [audioDownloadQueue, imageDownloadQueue],
 });
-rssRefreshQueue.subscribe(fetchRss.arn);
+rssRefreshQueue.subscribe(fetchRss.arn, {
+  batch: { size: 1 },
+});
 
 // Download Audio - downloads audio files to S3
 export const downloadAudio = new sst.aws.Function("DownloadAudio", {
@@ -66,7 +72,7 @@ export const downloadAudio = new sst.aws.Function("DownloadAudio", {
   runtime: "nodejs20.x",
   timeout: "10 minutes",
   memory: "1024 MB",
-  concurrency: { reserved: 1 },
+  concurrency: { reserved: 3 },
   permissions: [
     {
       actions: ["s3:PutObject", "s3:GetObject"],
@@ -87,7 +93,9 @@ export const downloadAudio = new sst.aws.Function("DownloadAudio", {
   },
   link: [processingQueue],
 });
-audioDownloadQueue.subscribe(downloadAudio.arn);
+audioDownloadQueue.subscribe(downloadAudio.arn, {
+  batch: { size: 1 },
+});
 
 // Download Image - downloads series/episode artwork to S3
 export const downloadImage = new sst.aws.Function("DownloadImage", {
@@ -117,7 +125,9 @@ export const downloadImage = new sst.aws.Function("DownloadImage", {
   },
   link: [imageProcessingQueue],
 });
-imageDownloadQueue.subscribe(downloadImage.arn);
+imageDownloadQueue.subscribe(downloadImage.arn, {
+  batch: { size: 1 },
+});
 
 // Process Image - converts images to base.png and base.jpg formats
 // Uses sharp which requires platform-specific installation for Lambda
@@ -143,7 +153,9 @@ export const processImage = new sst.aws.Function("ProcessImage", {
     install: ["sharp", "node-vibrant"],
   },
 });
-imageProcessingQueue.subscribe(processImage.arn);
+imageProcessingQueue.subscribe(processImage.arn, {
+  batch: { size: 1 },
+});
 
 // On Transcription Webhook - receives AssemblyAI webhook, adapts transcript, writes to S3
 // Must be declared before startProcessing so its .url is available for SST linking
@@ -159,20 +171,20 @@ export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebho
   },
   permissions: [
     {
-      actions: ["s3:PutObject"],
+      actions: ["s3:PutObject", "s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
     {
       actions: ["sqs:SendMessage"],
-      resources: [transcriptIngestQueue.arn],
+      resources: [subtitleGenerationQueue.arn],
     },
   ],
   environment: {
     ...commonEnv,
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
-    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
+    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
   },
-  link: [transcriptIngestQueue],
+  link: [subtitleGenerationQueue],
 });
 
 // SST v3 doesn't add lambda:InvokeFunction for public function URLs (fixed in v4.2.6).
@@ -195,20 +207,20 @@ export const checkStaleTranscriptions = new sst.aws.Function("CheckStaleTranscri
   concurrency: { reserved: 1 },
   permissions: [
     {
-      actions: ["s3:PutObject"],
+      actions: ["s3:PutObject", "s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
     {
       actions: ["sqs:SendMessage"],
-      resources: [transcriptIngestQueue.arn],
+      resources: [subtitleGenerationQueue.arn],
     },
   ],
   environment: {
     ...commonEnv,
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
-    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
+    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
   },
-  link: [transcriptIngestQueue],
+  link: [subtitleGenerationQueue],
 });
 
 // Start Processing - initiates both MediaConvert (HLS) and AssemblyAI transcription in parallel
@@ -245,7 +257,9 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url,
   },
 });
-processingQueue.subscribe(startProcessing.arn);
+processingQueue.subscribe(startProcessing.arn, {
+  batch: { size: 1 },
+});
 
 // Process Transcript - identifies speakers, chapters, segments and sends to Graphiti
 // Runs in VPC to access internal Graphiti service
@@ -255,7 +269,7 @@ export const processTranscript = new sst.aws.Function("ProcessTranscript", {
   runtime: "nodejs20.x",
   timeout: "15 minutes",
   memory: "1024 MB",
-  concurrency: { reserved: 1 },
+  concurrency: { reserved: 3 },
   vpc: vpcConfig,
   permissions: [
     {
@@ -275,7 +289,41 @@ export const processTranscript = new sst.aws.Function("ProcessTranscript", {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
   },
 });
-transcriptIngestQueue.subscribe(processTranscript.arn);
+transcriptIngestQueue.subscribe(processTranscript.arn, {
+  batch: { size: 1 },
+});
+
+// Generate HLS Subtitles - segments transcript.json into WebVTT and patches master manifest
+export const generateHlsSubtitles = new sst.aws.Function("GenerateHlsSubtitles", {
+  name: `narrows-${$app.stage}-generate-hls-subtitles`,
+  handler: "packages/functions/src/generate-hls-subtitles/handler.main",
+  runtime: "nodejs20.x",
+  timeout: "5 minutes",
+  memory: "512 MB",
+  concurrency: { reserved: 3 },
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [subtitleGenerationQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [transcriptIngestQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
+  },
+  link: [transcriptIngestQueue],
+});
+subtitleGenerationQueue.subscribe(generateHlsSubtitles.arn, {
+  batch: { size: 1 },
+});
 
 // On MediaConvert Complete - handles MediaConvert completion events
 export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {
@@ -288,7 +336,21 @@ export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComple
   logging: {
     logGroup: `/aws/lambda/narrows-${$app.stage}-on-mediaconvert-complete`,
   },
-  environment: commonEnv,
+  permissions: [
+    {
+      actions: ["s3:GetObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [subtitleGenerationQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
+  },
+  link: [subtitleGenerationQueue],
 });
 
 // On Transcribe Complete - handles Transcribe completion events
@@ -362,7 +424,9 @@ export const ingestListeningEvents = new sst.aws.Function("IngestListeningEvents
   ],
   environment: commonEnv,
 });
-listeningEventsQueue.subscribe(ingestListeningEvents.arn);
+listeningEventsQueue.subscribe(ingestListeningEvents.arn, {
+  batch: { size: 1 },
+});
 
 // Rollup Listening - hourly consistency sweep for listening summaries and patterns
 // Triggered by EventBridge schedule (configured in events.ts)
@@ -430,7 +494,9 @@ export const discoverEpisodes = new sst.aws.Function("DiscoverEpisodes", {
   },
   link: [audioDownloadQueue, imageDownloadQueue],
 });
-discoveryQueue.subscribe(discoverEpisodes.arn);
+discoveryQueue.subscribe(discoverEpisodes.arn, {
+  batch: { size: 1 },
+});
 
 // Export the Lambda ARNs for EventBridge rule setup
 export const lambdaArns = {

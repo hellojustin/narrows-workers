@@ -6,6 +6,7 @@ import {
   pickBestImageUrl,
   extractOwner,
   extractCategories,
+  isRssParseError,
 } from "@/fetch-rss/handler";
 
 describe("parseDuration", () => {
@@ -163,5 +164,24 @@ describe("extractCategories", () => {
       },
     ];
     expect(extractCategories(cats)).toEqual(["Technology", "Software"]);
+  });
+});
+
+describe("isRssParseError", () => {
+  it("returns true for sax/xml parse errors", () => {
+    expect(
+      isRssParseError(new Error("Attribute without value\nLine: 6196\nColumn: 1\nChar: 8"))
+    ).toBe(true);
+    expect(
+      isRssParseError(
+        new Error("Forward-slash in opening tag not followed by >\nLine: 5088\nColumn: 92\nChar: u")
+      )
+    ).toBe(true);
+  });
+
+  it("returns false for network and generic errors", () => {
+    expect(isRssParseError(new Error("fetch failed"))).toBe(false);
+    expect(isRssParseError(new Error("Episode sync failed (500)"))).toBe(false);
+    expect(isRssParseError("not an error")).toBe(false);
   });
 });

@@ -213,6 +213,22 @@ async function syncEpisodes(
 /**
  * Send SQS messages in batches of 10 (the SendMessageBatch limit).
  */
+/**
+ * True when rss-parser/sax failed on malformed feed XML (retrying won't help).
+ */
+export function isRssParseError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message;
+  return (
+    msg.includes("Line:") ||
+    msg.includes("Attribute without value") ||
+    msg.includes("Unclosed root tag") ||
+    msg.includes("Forward-slash in opening tag") ||
+    msg.includes("Non-whitespace before first tag") ||
+    msg.includes("Invalid character in tag name")
+  );
+}
+
 async function sendSqsBatch(
   queueUrl: string,
   messages: { id: string; body: string }[]
@@ -234,7 +250,7 @@ async function sendSqsBatch(
 /**
  * Fetch RSS Lambda
  *
- * Consumes from rss-refresh-queue.
+ * Consumes from rss-refresh-queue (batch size 1).
  * 1. Fetches series info (1 API call)
  * 2. Parses RSS feed (local)
  * 3. Updates series metadata (1 API call)
@@ -410,6 +426,13 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         }
       }
     } catch (error) {
+      if (isRssParseError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `Skipping series ${seriesId}: RSS feed is malformed and cannot be parsed (${message})`
+        );
+        continue;
+      }
       console.error(`Error processing series ${seriesId}:`, error);
       throw error;
     }

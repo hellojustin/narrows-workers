@@ -1,18 +1,17 @@
 /**
  * Shared logic for completing a transcription: fetch from AssemblyAI,
- * adapt to our format, write to S3, and enqueue for processing.
+ * adapt to our format, write to S3, and enqueue subtitle generation when ready.
  *
  * Called by both the webhook handler (happy path) and the stale job checker
  * (recovery path for missed webhooks).
  */
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { adaptToTranscriptResult } from "./adapter";
 import type { AssemblyAITranscript, AssemblyAISentencesResponse } from "./types";
+import { tryEnqueueAfterTranscription } from "../generate-hls-subtitles/enqueue";
 
 const s3Client = new S3Client({});
-const sqsClient = new SQSClient({});
 
 /**
  * Fetch the full transcript from AssemblyAI.
@@ -88,7 +87,7 @@ export async function updateEpisode(
 
 /**
  * Fetch transcript + sentences from AssemblyAI, adapt to our format,
- * write transcript.json to S3, and enqueue the episode for processing.
+ * write transcript.json to S3, and enqueue subtitle generation when HLS is ready.
  */
 export async function completeTranscription(params: {
   transcriptId: string;
@@ -96,7 +95,7 @@ export async function completeTranscription(params: {
   audioMediaId: string;
   assemblyApiKey: string;
   bucketName: string;
-  transcriptIngestQueueUrl: string;
+  subtitleGenerationQueueUrl: string;
 }): Promise<void> {
   const {
     transcriptId,
@@ -104,7 +103,7 @@ export async function completeTranscription(params: {
     audioMediaId,
     assemblyApiKey,
     bucketName,
-    transcriptIngestQueueUrl,
+    subtitleGenerationQueueUrl,
   } = params;
 
   // Fetch full transcript and sentences in parallel
@@ -135,13 +134,12 @@ export async function completeTranscription(params: {
       `${adapted.results.items.length} items`
   );
 
-  // Enqueue for transcript ingestion pipeline
-  await sqsClient.send(
-    new SendMessageCommand({
-      QueueUrl: transcriptIngestQueueUrl,
-      MessageBody: JSON.stringify({ episodeId }),
-    })
-  );
+  await tryEnqueueAfterTranscription({
+    episodeId,
+    audioMediaId,
+    bucketName,
+    queueUrl: subtitleGenerationQueueUrl,
+  });
 
   // Mark episode as ingesting
   await updateEpisode(episodeId, { processingStatus: "ingesting" });

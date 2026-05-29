@@ -58,7 +58,7 @@ async function fetchTranscript(
 }
 
 /**
- * Main handler for processing transcripts
+ * Main handler for processing transcripts (batch size 1).
  */
 export const main: SQSHandler = async (event: SQSEvent) => {
   console.log('Received event:', JSON.stringify(event, null, 2));

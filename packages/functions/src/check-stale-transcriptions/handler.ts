@@ -102,9 +102,9 @@ export const main: Handler = async () => {
   const apiKey = process.env.NARROWS_API_KEY;
   const assemblyApiKey = process.env.ASSEMBLYAI_API_KEY;
   const bucketName = process.env.MEDIA_BUCKET_NAME;
-  const transcriptIngestQueueUrl = process.env.TRANSCRIPT_INGEST_QUEUE_URL;
+  const subtitleGenerationQueueUrl = process.env.SUBTITLE_GENERATION_QUEUE_URL;
 
-  if (!apiUrl || !apiKey || !assemblyApiKey || !bucketName || !transcriptIngestQueueUrl) {
+  if (!apiUrl || !apiKey || !assemblyApiKey || !bucketName || !subtitleGenerationQueueUrl) {
     throw new Error("Missing required environment variables");
   }
 
@@ -141,7 +141,7 @@ export const main: Handler = async () => {
           audioMediaId,
           assemblyApiKey,
           bucketName,
-          transcriptIngestQueueUrl,
+          subtitleGenerationQueueUrl,
         });
         console.log(`Episode ${episode.id}: recovery complete`);
       } else if (statusResponse.status === "error") {

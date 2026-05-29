@@ -46,6 +46,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "GenerateHlsSubtitles": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "ImageDownloadDlq": {
       "type": "sst.aws.Queue"
       "url": string
@@ -123,6 +127,14 @@ declare module "sst" {
     "StartProcessing": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "SubtitleGenerationDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "SubtitleGenerationQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
     }
     "TranscriptIngestDlq": {
       "type": "sst.aws.Queue"

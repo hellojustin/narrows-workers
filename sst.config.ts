@@ -29,6 +29,7 @@ export default $config({
       transcriptIngestQueueUrl: queues.transcriptIngestQueue.url,
       listeningEventsQueueUrl: queues.listeningEventsQueue.url,
       discoveryQueueUrl: queues.discoveryQueue.url,
+      subtitleGenerationQueueUrl: queues.subtitleGenerationQueue.url,
       transcriptionWebhookUrl: (await import("./infra/functions")).onTranscriptionWebhook.url,
     };
   },

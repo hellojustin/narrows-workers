@@ -1,4 +1,5 @@
 import type { EventBridgeEvent, Handler } from "aws-lambda";
+import { tryEnqueueAfterMediaConvert } from "../generate-hls-subtitles/enqueue";
 
 interface MediaConvertJobStateChange {
   jobId: string;
@@ -91,8 +92,23 @@ export const main: Handler<EventBridgeEvent<"MediaConvert Job State Change", Med
 
   if (status === "COMPLETE") {
     console.log(`MediaConvert job ${jobId} completed successfully`);
-    // Note: We don't change processingStatus here because Transcribe
-    // might still be running. The final status is set when Transcribe completes.
+
+    const audioMediaId = userMetadata?.audioMediaId;
+    const bucketName = process.env.MEDIA_BUCKET_NAME;
+    const subtitleGenerationQueueUrl = process.env.SUBTITLE_GENERATION_QUEUE_URL;
+
+    if (audioMediaId && bucketName && subtitleGenerationQueueUrl) {
+      await tryEnqueueAfterMediaConvert({
+        episodeId,
+        audioMediaId,
+        bucketName,
+        queueUrl: subtitleGenerationQueueUrl,
+      });
+    } else {
+      console.warn(
+        `Missing audioMediaId or env vars for subtitle generation on episode ${episodeId}`
+      );
+    }
   } else if (status === "ERROR" || status === "CANCELED") {
     console.error(`MediaConvert job ${jobId} failed: ${errorMessage}`);
     await updateEpisode(episodeId, {

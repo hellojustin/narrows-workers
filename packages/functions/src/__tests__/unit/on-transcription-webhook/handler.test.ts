@@ -35,7 +35,7 @@ function makeEvent(
 function setEnv() {
   process.env.MEDIA_BUCKET_NAME = "test-bucket";
   process.env.ASSEMBLYAI_API_KEY = "test-api-key";
-  process.env.TRANSCRIPT_INGEST_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/test/queue";
+  process.env.SUBTITLE_GENERATION_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/test/subtitle-queue";
   process.env.NARROWS_API_URL = "https://narrows.example.com";
   process.env.NARROWS_API_KEY = "test-narrows-key";
 }
@@ -118,7 +118,7 @@ describe("on-transcription-webhook handler", () => {
       audioMediaId: "media-uuid",
       assemblyApiKey: "test-api-key",
       bucketName: "test-bucket",
-      transcriptIngestQueueUrl: "https://sqs.us-east-1.amazonaws.com/test/queue",
+      subtitleGenerationQueueUrl: "https://sqs.us-east-1.amazonaws.com/test/subtitle-queue",
     });
     expect(updateEpisode).not.toHaveBeenCalled();
   });

@@ -9,7 +9,7 @@
  *   2. Extract episodeId + audioMediaId from query string params
  *   3. On error: mark episode failed
  *   4. On completed: fetch full transcript + sentences, adapt to our format,
- *      write transcript.json to S3, enqueue for process-transcript pipeline
+ *      write transcript.json to S3, enqueue subtitle generation when HLS is ready
  */
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
@@ -23,9 +23,9 @@ export const main = async (
 
   const bucketName = process.env.MEDIA_BUCKET_NAME;
   const assemblyApiKey = process.env.ASSEMBLYAI_API_KEY;
-  const transcriptIngestQueueUrl = process.env.TRANSCRIPT_INGEST_QUEUE_URL;
+  const subtitleGenerationQueueUrl = process.env.SUBTITLE_GENERATION_QUEUE_URL;
 
-  if (!bucketName || !assemblyApiKey || !transcriptIngestQueueUrl) {
+  if (!bucketName || !assemblyApiKey || !subtitleGenerationQueueUrl) {
     console.error("Missing required environment variables");
     return { statusCode: 500, body: JSON.stringify({ error: "Server configuration error" }) };
   }
@@ -78,7 +78,7 @@ export const main = async (
       audioMediaId,
       assemblyApiKey,
       bucketName,
-      transcriptIngestQueueUrl,
+      subtitleGenerationQueueUrl,
     });
 
     console.log(`Successfully completed transcription for episode ${episodeId}`);
