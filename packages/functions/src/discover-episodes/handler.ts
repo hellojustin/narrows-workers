@@ -172,10 +172,13 @@ async function enqueueImageDownload(
 
 // ─── Prompt record ────────────────────────────────────────────────────────────
 
+type DiscoveryPromptMode = 'full' | 'topics_only';
+
 interface DiscoveryPromptRecord {
   id: string;
   name: string;
   prompt: string;
+  mode: DiscoveryPromptMode;
   scheduleMinutes: number;
   isActive: boolean;
   lastRunAt: string | null;
@@ -201,44 +204,59 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
     const stories = await discoverStories(promptRecord.prompt, openai);
     storiesResponse = stories;
 
-    const podcasts = await findPodcasts(stories, openai);
-    podcastsResponse = podcasts;
+    const mode = promptRecord.mode ?? 'full';
 
-    const resolved = await resolveRssUrls(podcasts);
-    const matched = await matchEpisodesInFeeds(resolved);
+    if (mode === 'topics_only') {
+      topicSeedsCreated = await seedTopics(
+        stories,
+        stories.map((s) => s.headline),
+        runId,
+        { graphitiPost, graphId: GRAPHITI_GRAPH_ID },
+      );
 
-    matchReport = matched.map((m) => ({
-      podcast_title: m.podcast_title,
-      episode_title: m.episode_title,
-      headline: m.headline,
-      rss_url: m.rss_url,
-      matched_guid: m.matched_guid,
-      matched_title: m.matched_title,
-      match_score: m.match_score,
-    }));
+      console.log(
+        `Prompt "${promptRecord.name}" complete (topics_only): ${topicSeedsCreated} seeds`,
+      );
+    } else {
+      const podcasts = await findPodcasts(stories, openai);
+      podcastsResponse = podcasts;
 
-    const ingestResult = await ingestEpisodes(matched, {
-      upsertSeries,
-      findExistingEpisode,
-      createEpisode,
-      enqueueAudioDownload,
-      enqueueImageDownload,
-    });
+      const resolved = await resolveRssUrls(podcasts);
+      const matched = await matchEpisodesInFeeds(resolved);
 
-    episodesDiscovered = ingestResult.episodesDiscovered;
-    seriesCreated = ingestResult.seriesCreated;
+      matchReport = matched.map((m) => ({
+        podcast_title: m.podcast_title,
+        episode_title: m.episode_title,
+        headline: m.headline,
+        rss_url: m.rss_url,
+        matched_guid: m.matched_guid,
+        matched_title: m.matched_title,
+        match_score: m.match_score,
+      }));
 
-    topicSeedsCreated = await seedTopics(
-      stories,
-      ingestResult.ingestedHeadlines,
-      runId,
-      { graphitiPost, graphId: GRAPHITI_GRAPH_ID },
-    );
+      const ingestResult = await ingestEpisodes(matched, {
+        upsertSeries,
+        findExistingEpisode,
+        createEpisode,
+        enqueueAudioDownload,
+        enqueueImageDownload,
+      });
 
-    console.log(
-      `Prompt "${promptRecord.name}" complete: ` +
-        `${episodesDiscovered} episodes, ${topicSeedsCreated} seeds, ${seriesCreated} series`,
-    );
+      episodesDiscovered = ingestResult.episodesDiscovered;
+      seriesCreated = ingestResult.seriesCreated;
+
+      topicSeedsCreated = await seedTopics(
+        stories,
+        ingestResult.ingestedHeadlines,
+        runId,
+        { graphitiPost, graphId: GRAPHITI_GRAPH_ID },
+      );
+
+      console.log(
+        `Prompt "${promptRecord.name}" complete: ` +
+          `${episodesDiscovered} episodes, ${topicSeedsCreated} seeds, ${seriesCreated} series`,
+      );
+    }
   } catch (err) {
     runError = err instanceof Error ? err.message : String(err);
     console.error(`Prompt "${promptRecord.name}" failed:`, err);
