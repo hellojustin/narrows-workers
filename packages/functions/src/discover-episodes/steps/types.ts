@@ -3,6 +3,7 @@ import type { MatchedEpisode } from '../match-episode';
 export interface Story {
   headline: string;
   summary: string;
+  citation: string;
 }
 
 export interface PodcastResult {

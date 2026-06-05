@@ -16,6 +16,7 @@ import type { SQSEvent, ScheduledEvent, Handler } from 'aws-lambda';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import OpenAI from 'openai';
 import { discoverStories } from './steps/discover-stories';
+import type { TopicSeed } from './steps/discover-stories';
 import { findPodcasts } from './steps/find-podcasts';
 import { resolveRssUrls } from './steps/resolve-rss';
 import { matchEpisodesInFeeds } from './steps/match-episodes';
@@ -70,7 +71,17 @@ async function narrowsPut<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-// ─── Graphiti API helper ──────────────────────────────────────────────────────
+// ─── Graphiti API helpers ─────────────────────────────────────────────────────
+
+async function graphitiGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${GRAPHITI_API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${GRAPHITI_API_KEY}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Graphiti GET ${path} failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
 
 async function graphitiPost<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${GRAPHITI_API_URL}${path}`, {
@@ -201,7 +212,17 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
   let matchReport: object[] | undefined;
 
   try {
-    const stories = await discoverStories(promptRecord.prompt, openai);
+    let existingSeeds: TopicSeed[] = [];
+    try {
+      const seedsResponse = await graphitiGet<{ seeds: TopicSeed[] }>(
+        `/graphs/${GRAPHITI_GRAPH_ID}/topics/seeds?active_only=true&limit=200`,
+      );
+      existingSeeds = seedsResponse.seeds;
+    } catch (err) {
+      console.warn('Could not fetch existing topic seeds; proceeding without exclusion list:', err);
+    }
+
+    const stories = await discoverStories(promptRecord.prompt, openai, existingSeeds);
     storiesResponse = stories;
 
     const mode = promptRecord.mode ?? 'full';

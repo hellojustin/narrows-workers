@@ -1,5 +1,3 @@
-Search the web for the 8-10 most significant news stories from the past 48 hours across
-technology, Artificial Intelligence, and business.
-
-Return each story as a short headline and a 2-3 sentence summary. Focus on stories that
-are likely to be discussed on major podcasts — consequential events, not routine updates.
+Please give me 40 stories that are trending in AI & tech news in the past 24 hours.
+Search discussion forums like twitter, hacker news, reddit, x, and any other news
+sites that are relevant to tech and AI. 

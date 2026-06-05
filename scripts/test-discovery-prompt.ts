@@ -1,6 +1,10 @@
 #!/usr/bin/env tsx
 /**
- * Four-stage discovery prompt tester.
+ * Discovery prompt tester.
+ *
+ * Modes:
+ *   topics_only — Stage 1 only: discover stories and print topic seeds.
+ *   full        — All four stages (default).
  *
  * Stage 1 — Stories (scripts/prompts/stories.txt):
  *   Calls OpenAI to find current news stories via web search.
@@ -16,6 +20,7 @@
  *   Locates each episode in the RSS feed using fuzzy title matching.
  *
  * Usage:
+ *   npm run test:prompt -- --mode=topics_only  # stories only (no podcasts/RSS/matching)
  *   npm run test:prompt                        # full run (stages 1-4)
  *   npm run test:prompt -- --from=3            # start at stage 3, load stage 2 output from file
  *   npm run test:prompt -- --raw               # JSON output
@@ -44,10 +49,11 @@ const storiesSchema = {
       items: {
         type: 'object',
         properties: {
-          headline: { type: 'string', description: 'Short news headline (one sentence)' },
-          summary: { type: 'string', description: '2-3 sentence summary of the story' },
+          headline: { type: 'string', description: 'Short news headline (two words max)' },
+          summary: { type: 'string', description: 'One or two sentence summary of the story' },
+          citation: { type: 'string', description: 'URL of the source citation for the story' },
         },
-        required: ['headline', 'summary'],
+        required: ['headline', 'summary', 'citation'],
         additionalProperties: false,
       },
     },
@@ -84,6 +90,7 @@ const podcastsSchema = {
 interface Story {
   headline: string;
   summary: string;
+  citation: string;
 }
 
 interface PodcastResult {
@@ -190,6 +197,8 @@ async function resolveRssUrl(
 
 const args = process.argv.slice(2);
 const rawFlag = args.includes('--raw');
+const modeArg = args.find((a) => a.startsWith('--mode='));
+const mode: 'full' | 'topics_only' = modeArg?.split('=')[1] === 'topics_only' ? 'topics_only' : 'full';
 const fromArg = args.find((a) => a.startsWith('--from='));
 const startStage = fromArg ? parseInt(fromArg.split('=')[1], 10) : 1;
 
@@ -198,18 +207,22 @@ if (startStage < 1 || startStage > 4 || isNaN(startStage)) {
   process.exit(1);
 }
 
+if (mode === 'topics_only' && (fromArg || startStage > 1)) {
+  console.error('--from is not compatible with --mode=topics_only (only Stage 1 runs)');
+  process.exit(1);
+}
+
 let stories: Story[];
 let allPodcasts: PodcastResult[];
 
-if (startStage <= 2) {
-  // Need OpenAI for stages 1-2
+if (mode === 'topics_only' || startStage <= 2) {
   if (!process.env.OPENAI_API_KEY) {
     console.error('OPENAI_API_KEY not set. Run via: npm run test:prompt');
     process.exit(1);
   }
 }
 
-const openai = startStage <= 2 ? new OpenAI() : null;
+const openai = (mode === 'topics_only' || startStage <= 2) ? new OpenAI() : null;
 
 // ─── Stage 1: Fetch stories ───────────────────────────────────────────────────
 
@@ -222,13 +235,84 @@ if (startStage <= 1) {
   console.log(`\nPrompt file: ${STORIES_PROMPT_FILE}\n`);
   console.log(storiesPromptText);
   console.log('\n' + '─'.repeat(60));
+
+  // Fetch existing topic seeds from Graphiti to avoid duplicates
+  interface SeedEntry { name: string; description: string }
+  let existingSeeds: SeedEntry[] = [];
+  const graphitiUrl = process.env.GRAPHITI_API_URL;
+  const graphitiKey = process.env.GRAPHITI_API_KEY;
+  const graphitiGraphId = process.env.GRAPHITI_GRAPH_ID;
+
+  if (graphitiUrl && graphitiGraphId) {
+    try {
+      const headers: Record<string, string> = {};
+      if (graphitiKey) headers['Authorization'] = `Bearer ${graphitiKey}`;
+
+      const seedsRes = await fetch(
+        `${graphitiUrl}/graphs/${graphitiGraphId}/topics/seeds?active_only=true&limit=200`,
+        { headers },
+      );
+      if (seedsRes.ok) {
+        const { seeds } = (await seedsRes.json()) as { seeds: SeedEntry[] };
+        existingSeeds = seeds;
+        console.log(`Fetched ${existingSeeds.length} existing topic seeds for exclusion`);
+      } else {
+        console.warn(`Could not fetch seeds (${seedsRes.status}); proceeding without exclusion`);
+      }
+    } catch (err) {
+      console.warn('Could not fetch seeds; proceeding without exclusion:', err);
+    }
+  } else {
+    console.warn('GRAPHITI_API_URL or GRAPHITI_GRAPH_ID not set; skipping seed exclusion');
+  }
+
   console.log('Calling OpenAI…\n');
 
   const storiesStart = performance.now();
 
+  const input: Array<{ role: 'developer' | 'system' | 'user'; content: string }> = [
+    {
+      role: 'system',
+      content: [
+        'You are a news reporter, tasked with finding the most common',
+        'stories that are trending in the area of news that the users asks',
+        'you to search for. Each of the stories you find will be structured in',
+        'two parts: a headline and a summary. A headline is one or two',
+        'words: a proper noun around which the story centers.',
+        'Prefer a single word, but use two words when it will clarify the story.',
+        'Readers already familiar with the story should be able to reconize',
+        'the headline, and immediately identify the story it refers to.',
+        'A summary is a one or two sentence recap of the facts of the story.',
+        'it should read like a short, breaking news story, in the present',
+        'tense, answering: who, what, when, where, and why. Downstream',
+        'consumers of your response may only see one result at a time,',
+        'so do not make cross-references or sequential references between',
+        'stories in your summaries.',
+      ].join(' '),
+    },
+  ];
+
+  if (existingSeeds.length > 0) {
+    input.push({
+      role: 'system',
+      content: [
+        'The following events have ALREADY been covered in the last 24 hours.',
+        'Avoid covering the same underlying event as any of these.',
+        'These are internal descriptions only — do NOT use them as examples of good headline format.',
+        'Your headlines should still follow the rules above (proper nouns, 1-2 words).',
+        'Find genuinely new stories instead.',
+        '',
+        'Already covered events:',
+        ...existingSeeds.map((s) => `- ${s.description}`),
+      ].join('\n'),
+    });
+  }
+
+  input.push({ role: 'user', content: storiesPromptText });
+
   const storiesResponse = await openai!.responses.create({
     model: MODEL,
-    input: storiesPromptText,
+    input,
     tools: [{ type: 'web_search_preview', search_context_size: 'medium' }],
     text: {
       format: {
@@ -254,7 +338,8 @@ if (startStage <= 1) {
 
   for (const [i, story] of stories.entries()) {
     console.log(`  ${i + 1}. ${story.headline}`);
-    console.log(`     ${story.summary}\n`);
+    console.log(`     ${story.summary}`);
+    console.log(`     ${story.citation}\n`);
   }
 } else {
   // Load from file
@@ -262,6 +347,28 @@ if (startStage <= 1) {
   stories = loaded.stories;
   allPodcasts = loaded.podcasts;
   console.log(`\nLoaded ${stories.length} stories and ${allPodcasts.length} podcasts from ${STAGE2_OUTPUT_FILE}\n`);
+}
+
+// ─── topics_only: print results and exit ──────────────────────────────────────
+
+if (mode === 'topics_only') {
+  if (rawFlag) {
+    console.log(JSON.stringify({ stories }, null, 2));
+  } else {
+    console.log('═'.repeat(60));
+    console.log(' TOPIC SEEDS');
+    console.log('═'.repeat(60));
+    console.log();
+    for (const [i, story] of stories.entries()) {
+      console.log(`  ${i + 1}. ${story.headline}`);
+      console.log(`     ${story.summary}\n`);
+    }
+    console.log('─'.repeat(60));
+    console.log(` ${stories.length} topic seeds`);
+    console.log('─'.repeat(60));
+    console.log();
+  }
+  process.exit(0);
 }
 
 // ─── Stage 2: Find podcasts (concurrent) ─────────────────────────────────────

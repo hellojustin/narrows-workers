@@ -1,0 +1,12 @@
+Search through all tech news, anything like twitter, hacker news, reddit, x, 
+business news sites, and any other news sites that are relevant to tech and AI,
+find the most common single words that are trending that people are
+talking about right now. Find the most commonly discuss words that relate to topics
+happening now, vs just common words like "AI" which is too broad and not about
+something new happening right now. Search only within tech and AI related news.
+Give me 40 words.
+
+Your response will be a json object, where the word is the "headline" and a summary
+of the story or stories that the word relates to is the "summary". The summary should 
+be one or two sentences, and read like short, breaking news story, answering: who,
+what, when, where, and why. It should not sound like a glossary definition of the word.
