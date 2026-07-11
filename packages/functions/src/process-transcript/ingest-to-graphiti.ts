@@ -15,7 +15,8 @@ import type {
   CleanTranscriptSegment,
 } from './types';
 
-const MAX_DATA_CHARS = 5000;
+/** Max chars per Graphiti /data body before sentence-aware splitting. */
+export const MAX_DATA_CHARS = 20000;
 
 /**
  * Generate contextual summary for a segment using Anthropic's contextual retrieval format

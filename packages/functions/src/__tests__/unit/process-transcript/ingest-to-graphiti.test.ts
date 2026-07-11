@@ -4,6 +4,7 @@ import {
   chunkData,
   formatTimestamp,
   ellipsize,
+  MAX_DATA_CHARS,
 } from "@/process-transcript/ingest-to-graphiti";
 
 describe("formatTimestamp", () => {
@@ -58,6 +59,10 @@ describe("countAdKeywordMatches", () => {
 });
 
 describe("chunkData", () => {
+  it("exports MAX_DATA_CHARS at 20000", () => {
+    expect(MAX_DATA_CHARS).toBe(20000);
+  });
+
   it("returns single chunk when data is within limit", () => {
     const data = "a".repeat(100);
     const chunks = chunkData(data);
@@ -65,19 +70,25 @@ describe("chunkData", () => {
     expect(chunks[0]).toBe(data);
   });
 
+  it("returns single chunk for data just under MAX_DATA_CHARS", () => {
+    const data = "a".repeat(MAX_DATA_CHARS - 1);
+    const chunks = chunkData(data);
+    expect(chunks).toHaveLength(1);
+  });
+
   it("splits data that exceeds MAX_DATA_CHARS into multiple chunks", () => {
-    const data = "a".repeat(6000);
+    const data = "a".repeat(MAX_DATA_CHARS + 1000);
     const chunks = chunkData(data);
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
-      expect(chunk.length).toBeLessThanOrEqual(5000);
+      expect(chunk.length).toBeLessThanOrEqual(MAX_DATA_CHARS);
     }
   });
 
   it("reassembled chunks contain all original content", () => {
-    // Use a string that will split at word boundaries
+    // Use a string that will split at word boundaries (~25k chars)
     const word = "hello ";
-    const data = word.repeat(1200); // ~7200 chars
+    const data = word.repeat(4200);
     const chunks = chunkData(data);
     expect(chunks.length).toBeGreaterThan(1);
     const reassembled = chunks.join(" ").replace(/\s+/g, " ").trim();
@@ -87,10 +98,11 @@ describe("chunkData", () => {
   });
 
   it("splits preferring sentence boundaries", () => {
-    // Build data with clear sentence endings before the 5000 char mark
+    // Build data with clear sentence endings before the MAX_DATA_CHARS mark
     const sentence = "This is a sentence. ";
-    const data = sentence.repeat(300); // ~6000 chars
+    const data = sentence.repeat(Math.ceil((MAX_DATA_CHARS + 2000) / sentence.length));
     const chunks = chunkData(data);
+    expect(chunks.length).toBeGreaterThan(1);
     // At least one chunk should end cleanly at a period
     const firstChunk = chunks[0];
     expect(firstChunk.trim().endsWith(".")).toBe(true);

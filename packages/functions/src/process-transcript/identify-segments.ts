@@ -1,8 +1,9 @@
 /**
  * Segment Identification Module
  *
- * Uses LLM to identify 20-60 segments per hour of audio content.
- * Segments are 30s-5min long, can slightly overlap, and cover substantive content.
+ * Uses LLM to identify up to ~8-30 segments per hour of audio content
+ * (~15/hour target). Segments are at least 30s and may span an entire chapter
+ * when content is a single coherent unit. Prefer fewer, longer segments.
  */
 
 import OpenAI from 'openai';
@@ -17,6 +18,11 @@ import type {
   SegmentType,
 } from './types';
 
+/** Soft upper bound on segments per episode hour (clamped 8–30). */
+export const SEGMENTS_PER_HOUR = 15;
+export const MIN_EPISODE_SEGMENTS = 8;
+export const MAX_EPISODE_SEGMENTS = 30;
+
 interface SegmentIdentificationResult {
   segments: {
     type: SegmentType;
@@ -28,6 +34,17 @@ interface SegmentIdentificationResult {
     subjectivity: number;
     humor: number;
   }[];
+}
+
+/**
+ * Soft target segment count for an episode of the given duration (seconds).
+ */
+export function targetSegmentCount(episodeDurationSec: number): number {
+  const durationHours = episodeDurationSec / 3600;
+  return Math.max(
+    MIN_EPISODE_SEGMENTS,
+    Math.min(MAX_EPISODE_SEGMENTS, Math.round(durationHours * SEGMENTS_PER_HOUR))
+  );
 }
 
 /**
@@ -114,12 +131,14 @@ async function identifySegmentsInChapter(
       messages: [
         {
           role: 'system',
-          content: `You are an expert at analyzing podcast content. Your task is to identify ${targetSegments} segments within this chapter.
+          content: `You are an expert at analyzing podcast content. Your task is to identify up to ${targetSegments} segments within this chapter.
 
 Segment requirements:
-1. Each segment should be 30 seconds to 5 minutes long
-2. Segments can slightly overlap (up to 10 seconds)
-3. Focus on substantive content (skip pure filler or dead air)
+1. Each segment must be at least 30 seconds long
+2. Each segment may be as long as the full chapter (~${Math.round(chapterDuration)} seconds). A single segment covering the entire chapter is OK when the content is one coherent unit
+3. Prefer fewer, longer segments over many short ones. Do not invent cuts just to hit the target count
+4. Segments can slightly overlap (up to 10 seconds)
+5. Focus on substantive content (skip pure filler or dead air)
 
 Segment types:
 - "show-intro": Standard show introduction
@@ -169,9 +188,9 @@ Chapter: "${chapter.title}" (${chapter.type})
 Chapter Time Range: ${chapter.episodeStartSec}s - ${chapter.episodeEndSec}s
 
 Chapter Transcript:
-${transcriptText.slice(0, 6000)}
+${transcriptText}
 
-Identify ${targetSegments} segments in this chapter.`,
+Identify up to ${targetSegments} segments in this chapter. Prefer fewer, longer segments when the content allows.`,
         },
       ],
       response_format: { type: 'json_object' },
@@ -224,12 +243,11 @@ export async function identifySegments(
     return [];
   }
 
-  // Calculate target segments based on episode duration
+  // Soft upper bound on segments for the episode (~15/hour, clamped 8–30)
   const episodeDuration = Math.max(
     ...transcriptSegments.map((s) => parseFloat(s.end_time))
   );
-  const durationHours = episodeDuration / 3600;
-  const totalTargetSegments = Math.max(20, Math.min(60, Math.round(durationHours * 40)));
+  const totalTargetSegments = targetSegmentCount(episodeDuration);
 
   // Process each chapter
   const allSegments: Segment[] = [];

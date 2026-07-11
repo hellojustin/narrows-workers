@@ -112,7 +112,7 @@ The `process-transcript` Lambda is the core processing function. It:
    - Stores via `PUT /chapters/:id`
 
 3. **Identifies Segments** (LLM: gpt-4o-mini)
-   - Creates 20-60 segments per hour (30s-5min each)
+   - Creates up to ~8-30 segments per hour (~15/hour target; 30s–full chapter each; prefer fewer, longer)
    - Evaluates content metrics:
      - **Lucidity** (0-5): Clarity of expression
      - **Polarity** (-5 to +5): Sentiment
@@ -223,6 +223,19 @@ dotenv -e .env.production -- sst deploy --stage production
 # Remove a deployment
 npm run remove:dev
 ```
+
+Workers-only changes (segment sizing, `MAX_DATA_CHARS`) do **not** require a Graphiti server rebuild. If SST reports a stale lock: `npx sst unlock --stage production`.
+
+### Smoke checks (longer segments / Graphiti char cap)
+
+After deploy, re-run or process one real episode through `process-transcript` and confirm:
+
+1. Segment count drops vs prior (~half for a typical hour-long show; soft target ~15/hour, clamp 8–30).
+2. Some segments approach chapter length (30s–full chapter is allowed).
+3. Graphiti ingest logs rarely show `chunk 2/N` (payloads stay under 20k chars).
+4. Spot-check 2–3 long chapters: boundaries align with content shifts; no empty tail from the old 6k transcript blind spot.
+
+**Rollback:** revert the segment-target / prompt / `MAX_DATA_CHARS` edits in this repo and `npm run deploy:production`. No Graphiti redeploy needed.
 
 ## Related Repositories
 
