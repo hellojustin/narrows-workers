@@ -118,4 +118,15 @@ export const main: ScheduledHandler = async () => {
   // For now, patterns are skipped in the rollup (they require joining episode->series data)
   // The narrows API could provide a dedicated endpoint for this in the future
   console.log("Rollup: patterns computation deferred (requires episode->series mapping)");
+
+  // Series-level listen stats (publisher dashboard). Narrows recomputes only
+  // the hour/day buckets touched by events in this lookback window.
+  const end = new Date().toISOString();
+  const seriesStats = await apiFetch("/api/v1/internal/series-stats/rollup", {
+    method: "POST",
+    body: JSON.stringify({ start: since, end }),
+  });
+  console.log(
+    `Rollup: series stats hour=${seriesStats.hour_buckets} day=${seriesStats.day_buckets} pruned_hourly=${seriesStats.pruned_hourly}`,
+  );
 };
