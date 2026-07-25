@@ -31,9 +31,12 @@ const vpcConfig = process.env.VPC_SUBNET_IDS
 // Common environment variables for all functions
 const commonEnv = {
   MEDIA_BUCKET_NAME: mediaBucketName,
-  DATABASE_URL: process.env.DATABASE_URL ?? "",
   NARROWS_API_URL: process.env.NARROWS_API_URL ?? "",
   NARROWS_API_KEY: process.env.NARROWS_API_KEY ?? "",
+  // Lambda already defaults to UTC, but these handlers compute time windows
+  // that narrows uses to bucket listening and revenue by day. Stating it keeps
+  // the boundary from moving if that default ever does.
+  TZ: "UTC",
 };
 
 // Fetch RSS - fetches and parses RSS feeds, batch-syncs episodes

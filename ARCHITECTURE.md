@@ -195,8 +195,25 @@ MediaConvert and Transcribe completion events are routed from the **default Even
 | `MEDIACONVERT_ROLE_ARN` | IAM role for MediaConvert |
 | `VPC_SUBNET_IDS` | VPC subnets (for Graphiti VPC access) |
 | `VPC_SECURITY_GROUP_IDS` | VPC security groups |
+| `TZ` | Pinned to `UTC` for every function (see below) |
 
 Environment files are gitignored. Copy `.env.example` to `.env.dev` or `.env.production` and fill in values.
+
+### Time is always UTC
+
+These handlers don't touch Postgres directly — they send time windows to narrows,
+which buckets listening and revenue by UTC day to allocate podcaster payouts. A
+window computed against a non-UTC local clock would shift those day boundaries
+and misallocate money, so:
+
+- `TZ: "UTC"` is set on every function in `infra/functions.ts`. Lambda already
+  defaults to UTC; stating it keeps the boundary from moving if that default does.
+- Derive instants and dates only from UTC-safe operations — epoch arithmetic,
+  `toISOString()`, and `getUTC*()` getters. Never the local-time `Date`
+  constructor or `getHours()`/`getDate()`-style local getters.
+- `vitest.config.ts` runs the suite at `Pacific/Chatham`, a fractional
+  date-line-crossing offset, so local-time date math fails a test rather than
+  quietly shifting a boundary in production.
 
 ## Testing
 
