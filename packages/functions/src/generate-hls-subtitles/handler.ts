@@ -17,6 +17,7 @@ import {
   patchMasterManifest,
   type TranscriptItem,
 } from "./webvtt";
+import { isEpisodeIngestible } from "../shared/episode-guard";
 
 const s3Client = new S3Client({});
 const sqsClient = new SQSClient({});
@@ -136,6 +137,13 @@ export const main: SQSHandler = async (event: SQSEvent) => {
 
     if (!episodeId || !audioMediaId) {
       throw new Error("Missing episodeId or audioMediaId in message");
+    }
+
+    if (!(await isEpisodeIngestible(episodeId))) {
+      console.log(
+        `Skipping subtitle generation for episode ${episodeId}: not found or series opted out`
+      );
+      continue;
     }
 
     console.log(`Generating HLS subtitles for episode ${episodeId}, media ${audioMediaId}`);

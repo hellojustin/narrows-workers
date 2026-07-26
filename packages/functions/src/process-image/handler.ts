@@ -2,6 +2,10 @@ import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import sharp from "sharp";
 import { Vibrant } from "node-vibrant/node";
+import {
+  isEpisodeIngestible,
+  isSeriesIngestible,
+} from "../shared/episode-guard";
 
 const s3Client = new S3Client({});
 
@@ -190,6 +194,17 @@ export const main: SQSHandler = async (event: SQSEvent) => {
     console.log(`Processing image for ${type} ${entityId}, mediaId: ${mediaId}`);
 
     try {
+      const ingestible =
+        type === "series"
+          ? await isSeriesIngestible(entityId)
+          : await isEpisodeIngestible(entityId);
+      if (!ingestible) {
+        console.log(
+          `Skipping image processing for ${type} ${entityId}: not found or series opted out`
+        );
+        continue;
+      }
+
       // 1. Download raw image from S3
       console.log(`Downloading raw image from S3: raw/${mediaId}`);
       const rawImageBuffer = await downloadFromS3(bucketName, mediaId);

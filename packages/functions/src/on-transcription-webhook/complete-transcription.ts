@@ -10,6 +10,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { adaptToTranscriptResult } from "./adapter";
 import type { AssemblyAITranscript, AssemblyAISentencesResponse } from "./types";
 import { tryEnqueueAfterTranscription } from "../generate-hls-subtitles/enqueue";
+import { isEpisodeIngestible } from "../shared/episode-guard";
 
 const s3Client = new S3Client({});
 
@@ -105,6 +106,13 @@ export async function completeTranscription(params: {
     bucketName,
     subtitleGenerationQueueUrl,
   } = params;
+
+  if (!(await isEpisodeIngestible(episodeId))) {
+    console.log(
+      `Skipping transcription completion for episode ${episodeId}: not found or series opted out`
+    );
+    return;
+  }
 
   // Fetch full transcript and sentences in parallel
   const [transcript, sentencesResponse] = await Promise.all([

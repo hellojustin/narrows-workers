@@ -1,6 +1,10 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import {
+  isEpisodeIngestible,
+  isSeriesIngestible,
+} from "../shared/episode-guard";
 
 const s3Client = new S3Client({});
 const sqsClient = new SQSClient({});
@@ -233,6 +237,17 @@ export const main: SQSHandler = async (event: SQSEvent) => {
     try {
       if (!imageUrl) {
         console.error(`No image URL provided for ${type} ${id}`);
+        continue;
+      }
+
+      const ingestible =
+        type === "series"
+          ? await isSeriesIngestible(id)
+          : await isEpisodeIngestible(id);
+      if (!ingestible) {
+        console.log(
+          `Skipping image download for ${type} ${id}: not found or series opted out`
+        );
         continue;
       }
 

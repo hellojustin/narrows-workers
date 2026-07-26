@@ -11,6 +11,8 @@ interface SeriesData {
   title?: string;
   image_url?: string;
   icon_media_id?: string | null;
+  opted_out?: boolean;
+  auto_ingest?: boolean;
 }
 
 interface RssRefreshMessage {
@@ -274,6 +276,11 @@ export const main: SQSHandler = async (event: SQSEvent) => {
 
       if (!series.rss_url) {
         console.error(`Series ${seriesId} has no RSS URL`);
+        continue;
+      }
+
+      if (series.opted_out) {
+        console.log(`Series ${seriesId} is opted out; skipping RSS refresh`);
         continue;
       }
 

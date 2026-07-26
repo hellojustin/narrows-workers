@@ -23,6 +23,7 @@ import { matchEpisodesInFeeds } from './steps/match-episodes';
 import { ingestEpisodes } from './steps/ingest';
 import { seedTopics } from './steps/seed-topics';
 import type { DiscoveryMessage, PromptRunResult } from './types';
+import { isSeriesIngestible } from '../shared/episode-guard';
 
 const sqsClient = new SQSClient({});
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -257,6 +258,7 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
 
       const ingestResult = await ingestEpisodes(matched, {
         upsertSeries,
+        isSeriesIngestible,
         findExistingEpisode,
         createEpisode,
         enqueueAudioDownload,

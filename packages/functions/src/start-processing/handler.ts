@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-mediaconvert";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { isEpisodeIngestible } from "../shared/episode-guard";
 
 let mediaConvertClient: MediaConvertClient | null = null;
 const s3Client = new S3Client({});
@@ -225,6 +226,13 @@ export const main: SQSHandler = async (event: SQSEvent) => {
     console.log(`Starting processing for episode: ${episodeId}, media: ${audioMediaId}`);
 
     try {
+      if (!(await isEpisodeIngestible(episodeId))) {
+        console.log(
+          `Skipping processing for episode ${episodeId}: not found or series opted out`
+        );
+        continue;
+      }
+
       // Start both jobs in parallel
       const [mediaConvertJobId, transcribeJobName] = await Promise.all([
         startMediaConvertJob(episodeId, audioMediaId, bucketName, roleArn),

@@ -1,5 +1,6 @@
 import type { EventBridgeEvent, Handler } from "aws-lambda";
 import { tryEnqueueAfterMediaConvert } from "../generate-hls-subtitles/enqueue";
+import { isEpisodeIngestible } from "../shared/episode-guard";
 
 interface MediaConvertJobStateChange {
   jobId: string;
@@ -87,6 +88,13 @@ export const main: Handler<EventBridgeEvent<"MediaConvert Job State Change", Med
 
   if (!episodeId) {
     console.error(`Could not find episode for MediaConvert job: ${jobId}`);
+    return;
+  }
+
+  if (!(await isEpisodeIngestible(episodeId))) {
+    console.log(
+      `Skipping MediaConvert completion for episode ${episodeId}: not found or series opted out`
+    );
     return;
   }
 

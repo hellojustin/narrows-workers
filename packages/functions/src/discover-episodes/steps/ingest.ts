@@ -2,6 +2,7 @@ import type { MatchedPodcast, IngestResult } from './types';
 
 export interface IngestDeps {
   upsertSeries(rssUrl: string): Promise<{ id: string; created: boolean; imageUrl: string | null }>;
+  isSeriesIngestible(seriesId: string): Promise<boolean>;
   findExistingEpisode(seriesId: string, guid: string): Promise<string | null>;
   createEpisode(seriesId: string, data: {
     guid: string;
@@ -31,6 +32,13 @@ export async function ingestEpisodes(
   for (const match of matches) {
     try {
       const { id: seriesId, created, imageUrl } = await deps.upsertSeries(match.rss_url);
+      if (!(await deps.isSeriesIngestible(seriesId))) {
+        console.log(
+          `Series ${seriesId} ("${match.podcast_title}") is opted out; skipping discovery ingest`,
+        );
+        continue;
+      }
+
       if (created) {
         seriesCreated++;
         if (imageUrl) {
