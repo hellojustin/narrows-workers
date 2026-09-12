@@ -7,6 +7,7 @@
  */
 
 import { mediaBucketName } from "./storage";
+import { ffmpegLayerArn, ffmpegEnv, FFMPEG_ARCHITECTURE } from "./layers";
 import {
   rssRefreshQueue,
   audioDownloadQueue,
@@ -17,6 +18,8 @@ import {
   listeningEventsQueue,
   discoveryQueue,
   subtitleGenerationQueue,
+  audioTranscodeQueue,
+  audioAnalysisQueue,
 } from "./queues";
 
 // VPC configuration for Lambda functions
@@ -498,6 +501,86 @@ export const discoverEpisodes = new sst.aws.Function("DiscoverEpisodes", {
   link: [audioDownloadQueue, imageDownloadQueue],
 });
 discoveryQueue.subscribe(discoverEpisodes.arn, {
+  batch: { size: 1 },
+});
+
+/**
+ * ffmpeg functions.
+ *
+ * Both run on arm64 with the static ffmpeg layer. 3538 MB gives 2 vCPU; Lambda
+ * allocates vCPU in proportion to memory, and the AAC encoder is single-threaded
+ * — measured locally, `user` time was 185.5 s against 176.0 s wall — so more than
+ * 2 vCPU does not speed up the transcode itself.
+ */
+const FFMPEG_MEMORY = "3538 MB";
+
+// Transcode Audio - HLS transcode with ffmpeg, replaces the MediaConvert job
+export const transcodeAudio = new sst.aws.Function("TranscodeAudio", {
+  name: `narrows-${$app.stage}-transcode-audio`,
+  handler: "packages/functions/src/transcode-audio/handler.main",
+  runtime: "nodejs20.x",
+  architecture: FFMPEG_ARCHITECTURE,
+  timeout: "15 minutes",
+  memory: FFMPEG_MEMORY,
+  // A 4h34m episode produces about 264 MB of segments. ffmpeg reads its input
+  // over HTTPS rather than downloading it, so nothing else occupies /tmp.
+  storage: "4096 MB",
+  concurrency: { reserved: 3 },
+  layers: [ffmpegLayerArn],
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [audioTranscodeQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [subtitleGenerationQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ...ffmpegEnv,
+    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
+  },
+  link: [subtitleGenerationQueue],
+});
+audioTranscodeQueue.subscribe(transcodeAudio.arn, {
+  batch: { size: 1 },
+});
+
+// Analyze Audio - waveform peaks and per-frequency-band energy
+export const analyzeAudio = new sst.aws.Function("AnalyzeAudio", {
+  name: `narrows-${$app.stage}-analyze-audio`,
+  handler: "packages/functions/src/analyze-audio/handler.main",
+  runtime: "nodejs20.x",
+  architecture: FFMPEG_ARCHITECTURE,
+  timeout: "15 minutes",
+  memory: FFMPEG_MEMORY,
+  // The analysis streams decoded PCM and writes one output object, so it needs
+  // far less scratch space than the transcode.
+  storage: "1024 MB",
+  concurrency: { reserved: 3 },
+  layers: [ffmpegLayerArn],
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [audioAnalysisQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ...ffmpegEnv,
+  },
+});
+audioAnalysisQueue.subscribe(analyzeAudio.arn, {
   batch: { size: 1 },
 });
 

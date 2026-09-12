@@ -66,9 +66,14 @@ export async function tryEnqueueAfterTranscription(params: {
 }
 
 /**
- * After MediaConvert completes: enqueue if transcript.json exists.
+ * After the HLS transcode completes: enqueue if transcript.json exists.
+ *
+ * Deliberately agnostic about which producer wrote the HLS. The fan-in has always
+ * worked by S3 object existence rather than by reading a job-completion event,
+ * which is why the ffmpeg transcode Lambda can call this directly and the
+ * MediaConvert EventBridge rule can be dropped rather than replaced.
  */
-export async function tryEnqueueAfterMediaConvert(params: {
+export async function tryEnqueueAfterTranscode(params: {
   episodeId: string;
   audioMediaId: string;
   bucketName: string;
@@ -88,3 +93,9 @@ export async function tryEnqueueAfterMediaConvert(params: {
 
   await enqueueSubtitleGeneration(params);
 }
+
+/**
+ * @deprecated Use tryEnqueueAfterTranscode. Retained so on-media-convert-complete
+ * keeps working until MediaConvert is decommissioned.
+ */
+export const tryEnqueueAfterMediaConvert = tryEnqueueAfterTranscode;
