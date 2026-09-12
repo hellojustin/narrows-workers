@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { isEpisodeIngestible } from "../shared/episode-guard";
 import { probeAudio, timeoutFromContext } from "../shared/ffmpeg";
-import { presignedInputUrl, uploadAll, uploadOne } from "../shared/s3-media";
+import { downloadRawAudio, uploadAll, uploadOne } from "../shared/s3-media";
 import { hlsPrefix } from "../generate-hls-subtitles/paths";
 import { tryEnqueueAfterTranscode } from "../generate-hls-subtitles/enqueue";
 import { transcodeToHls, verifyPlaylistAgainstSegments, SEGMENT_SECONDS } from "./hls";
@@ -21,12 +21,19 @@ interface TranscodeMessage {
 
 /**
  * Lambda gives every invocation a writable /tmp. Ephemeral storage is configured
- * to 4096 MB, which covers the largest episode in the catalogue: 4h34m at 128 kbps
- * is about 264 MB of segments, and nothing else is written there because ffmpeg
- * reads its input over HTTPS rather than downloading it.
+ * to 4096 MB, which covers the largest episode in the catalogue: 4h34m is about
+ * 400 MB of source and 264 MB of segments.
  */
 function scratchDir(audioMediaId: string): string {
   return path.join("/tmp", `hls-${audioMediaId}`);
+}
+
+/**
+ * Kept outside scratchDir, because transcodeToHls clears its output directory
+ * before running and would otherwise delete the source it is about to read.
+ */
+function sourcePathFor(audioMediaId: string): string {
+  return path.join("/tmp", `src-${audioMediaId}`);
 }
 
 async function updateEpisode(
@@ -73,19 +80,21 @@ export async function transcodeEpisode(params: {
   const { episodeId, audioMediaId, bucketName } = params;
   const startedAt = Date.now();
   const outputDir = scratchDir(audioMediaId);
+  const sourcePath = sourcePathFor(audioMediaId);
   const destinationPrefix = params.destinationPrefix ?? hlsPrefix(audioMediaId);
 
   try {
-    const inputUrl = await presignedInputUrl(bucketName, audioMediaId);
+    const { bytes } = await downloadRawAudio(bucketName, audioMediaId, sourcePath);
+    console.log(`Downloaded ${bytes} bytes for ${audioMediaId}`);
 
-    const probed = await probeAudio(inputUrl, { timeoutMs: 60_000 });
+    const probed = await probeAudio(sourcePath, { timeoutMs: 60_000 });
     console.log(
       `Source for ${audioMediaId}: ${probed.durationSec.toFixed(3)}s ${probed.codecName} ` +
         `${probed.sampleRate}Hz ${probed.channels}ch`
     );
 
     const output = await transcodeToHls({
-      input: inputUrl,
+      input: sourcePath,
       outputDir,
       audioMediaId,
       ffmpegOptions: {
@@ -161,9 +170,11 @@ export async function transcodeEpisode(params: {
       elapsedMs,
     };
   } finally {
-    // /tmp persists across invocations on a warm container, so a 264 MB directory
-    // left behind would exhaust ephemeral storage after a few episodes.
+    // /tmp persists across invocations on a warm container, so a 400 MB source and
+    // 264 MB of segments left behind would exhaust ephemeral storage within a few
+    // episodes.
     await rm(outputDir, { recursive: true, force: true });
+    await rm(sourcePath, { force: true });
   }
 }
 

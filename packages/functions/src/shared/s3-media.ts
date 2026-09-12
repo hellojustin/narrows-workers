@@ -1,9 +1,14 @@
 /**
- * S3 helpers shared by the container-image Lambdas.
+ * S3 helpers shared by the ffmpeg Lambdas.
  *
- * ffmpeg reads its input over HTTPS from a presigned URL rather than from a
- * downloaded file, which removes the input copy entirely. start-processing
- * already does this for AssemblyAI.
+ * Input is downloaded to /tmp rather than read by ffmpeg over HTTPS. The layer's
+ * ffmpeg is statically linked, and a static glibc binary cannot resolve hostnames:
+ * glibc does DNS through NSS modules it dlopens at runtime, which a static binary
+ * has no way to load. Passing a presigned URL fails with "Failed to resolve
+ * hostname ...: System error" even though the binary itself runs. Verified on
+ * Lambda. Downloading first costs about two seconds in-region for a 212 MB file,
+ * against a transcode measured in minutes, and it removes any chance of the
+ * presigned URL expiring part-way through.
  *
  * Output is many small objects — a 3-hour episode produces roughly 1,080
  * segments — so uploads run concurrently with a bounded pool and per-object
@@ -12,15 +17,20 @@
 
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { stat, mkdir } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import path from "node:path";
 
 const s3Client = new S3Client({});
 
 /**
  * Presigned GET expiry. Longer than the 15-minute Lambda ceiling so the URL
- * cannot expire mid-transcode, which would fail late and waste the whole run.
+ * cannot expire mid-run.
+ *
+ * Still used for services that fetch the audio themselves, such as AssemblyAI.
+ * ffmpeg cannot use one; see the note above.
  */
 const DEFAULT_INPUT_URL_TTL_SEC = 3600;
 
@@ -44,6 +54,45 @@ export async function presignedInputUrl(
     new GetObjectCommand({ Bucket: bucket, Key: rawKey(mediaId) }),
     { expiresIn: expiresInSec }
   );
+}
+
+/**
+ * Download the original audio to a local path for ffmpeg to read.
+ *
+ * Streamed to disk rather than buffered: the largest source in the catalogue is
+ * about 400 MB, and holding that in memory alongside the transcode is wasteful
+ * when /tmp is already provisioned for the output.
+ */
+export async function downloadRawAudio(
+  bucket: string,
+  mediaId: string,
+  destinationPath: string
+): Promise<{ bytes: number }> {
+  await mkdir(path.dirname(destinationPath), { recursive: true });
+
+  const response = await s3Client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: rawKey(mediaId) })
+  );
+  if (!response.Body) {
+    throw new Error(`No body returned for s3://${bucket}/${rawKey(mediaId)}`);
+  }
+
+  await pipeline(response.Body as Readable, createWriteStream(destinationPath));
+
+  const { size } = await stat(destinationPath);
+  if (size === 0) {
+    throw new Error(`Downloaded s3://${bucket}/${rawKey(mediaId)} but the file is empty`);
+  }
+  // A short read produces a file ffmpeg will happily transcode into a truncated
+  // stream, so compare against the length S3 reported.
+  if (response.ContentLength !== undefined && size !== response.ContentLength) {
+    throw new Error(
+      `Downloaded ${size} bytes of s3://${bucket}/${rawKey(mediaId)} but S3 reported ` +
+        `${response.ContentLength}`
+    );
+  }
+
+  return { bytes: size };
 }
 
 const CONTENT_TYPES: Record<string, string> = {

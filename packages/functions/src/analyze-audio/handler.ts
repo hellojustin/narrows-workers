@@ -1,7 +1,9 @@
 import type { Context, SQSEvent, SQSHandler } from "aws-lambda";
+import { rm } from "node:fs/promises";
+import path from "node:path";
 
 import { probeAudio, spawnFfmpeg, timeoutFromContext } from "../shared/ffmpeg";
-import { presignedInputUrl, uploadOne } from "../shared/s3-media";
+import { downloadRawAudio, uploadOne } from "../shared/s3-media";
 import {
   analyzeS16lePcm,
   encodeWaveformBinary,
@@ -85,80 +87,87 @@ export async function analyzeEpisode(params: {
 }): Promise<AnalysisSummary> {
   const { audioMediaId, bucketName } = params;
   const startedAt = Date.now();
+  // The static ffmpeg cannot resolve hostnames, so the source is downloaded
+  // rather than read over HTTPS. See shared/s3-media.ts.
+  const sourcePath = path.join("/tmp", `analyse-${audioMediaId}`);
 
-  const inputUrl = await presignedInputUrl(bucketName, audioMediaId);
-  const probed = await probeAudio(inputUrl, { timeoutMs: 60_000 });
-  console.log(
-    `Analysing ${audioMediaId}: ${probed.durationSec.toFixed(3)}s ${probed.codecName} ` +
-      `${probed.sampleRate}Hz ${probed.channels}ch`
-  );
-
-  const proc = spawnFfmpeg(buildDecodeArgs(inputUrl), {
-    label: `analyse ${audioMediaId}`,
-    timeoutMs: params.timeoutMs,
-  });
-
-  let data: WaveformData;
   try {
-    // Consuming stdout as an async iterable applies backpressure, so decoded PCM
-    // is never buffered. A 4h34m episode decodes to about 3.2 GB.
-    data = await analyzeS16lePcm(proc.stdout, {
-      sampleRate: WAVEFORM_DEFAULTS.sampleRate,
-      channels: WAVEFORM_DEFAULTS.channels,
-    });
-  } catch (error) {
-    proc.kill();
-    throw error;
-  }
-
-  // Await the exit after draining, so a non-zero exit is not masked by a
-  // successful-looking analysis of a truncated stream.
-  await proc.completion;
-
-  const expectedFrames = Math.floor(probed.durationSec * data.framesPerSecond);
-  if (Math.abs(data.frameCount - expectedFrames) > data.framesPerSecond) {
-    throw new Error(
-      `Analysis of ${audioMediaId} produced ${data.frameCount} frames but the source ` +
-        `duration ${probed.durationSec.toFixed(3)}s implies about ${expectedFrames}`
+    const { bytes } = await downloadRawAudio(bucketName, audioMediaId, sourcePath);
+    const probed = await probeAudio(sourcePath, { timeoutMs: 60_000 });
+    console.log(
+      `Analysing ${audioMediaId}: ${bytes} bytes, ${probed.durationSec.toFixed(3)}s ` +
+        `${probed.codecName} ${probed.sampleRate}Hz ${probed.channels}ch`
     );
-  }
 
-  const prefix = params.keyPrefix ?? `processed/${audioMediaId}/`;
-  const binary = encodeWaveformBinary(data);
-  await uploadOne(bucketName, {
-    key: `${prefix}waveform.bin`,
-    body: binary,
-    contentType: "application/octet-stream",
-    cacheControl: IMMUTABLE_CACHE,
-  });
+    const proc = spawnFfmpeg(buildDecodeArgs(sourcePath), {
+      label: `analyse ${audioMediaId}`,
+      timeoutMs: params.timeoutMs,
+    });
 
-  const shouldWriteJson = params.writeJson ?? probed.durationSec <= JSON_MAX_DURATION_SEC;
-  let jsonBytes: number | null = null;
-  if (shouldWriteJson) {
-    const json = encodeWaveformJson(data);
-    jsonBytes = Buffer.byteLength(json);
+    let data: WaveformData;
+    try {
+      // Consuming stdout as an async iterable applies backpressure, so decoded PCM
+      // is never buffered. A 4h34m episode decodes to about 3.2 GB.
+      data = await analyzeS16lePcm(proc.stdout, {
+        sampleRate: WAVEFORM_DEFAULTS.sampleRate,
+        channels: WAVEFORM_DEFAULTS.channels,
+      });
+    } catch (error) {
+      proc.kill();
+      throw error;
+    }
+
+    // Await the exit after draining, so a non-zero exit is not masked by a
+    // successful-looking analysis of a truncated stream.
+    await proc.completion;
+
+    const expectedFrames = Math.floor(probed.durationSec * data.framesPerSecond);
+    if (Math.abs(data.frameCount - expectedFrames) > data.framesPerSecond) {
+      throw new Error(
+        `Analysis of ${audioMediaId} produced ${data.frameCount} frames but the source ` +
+          `duration ${probed.durationSec.toFixed(3)}s implies about ${expectedFrames}`
+      );
+    }
+
+    const prefix = params.keyPrefix ?? `processed/${audioMediaId}/`;
+    const binary = encodeWaveformBinary(data);
     await uploadOne(bucketName, {
-      key: `${prefix}waveform.json`,
-      body: json,
-      contentType: "application/json",
+      key: `${prefix}waveform.bin`,
+      body: binary,
+      contentType: "application/octet-stream",
       cacheControl: IMMUTABLE_CACHE,
     });
+
+    const shouldWriteJson = params.writeJson ?? probed.durationSec <= JSON_MAX_DURATION_SEC;
+    let jsonBytes: number | null = null;
+    if (shouldWriteJson) {
+      const json = encodeWaveformJson(data);
+      jsonBytes = Buffer.byteLength(json);
+      await uploadOne(bucketName, {
+        key: `${prefix}waveform.json`,
+        body: json,
+        contentType: "application/json",
+        cacheControl: IMMUTABLE_CACHE,
+      });
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+    console.log(
+      `Analysed ${audioMediaId}: ${data.frameCount} frames, ${binary.byteLength} bytes binary` +
+        `${jsonBytes === null ? "" : `, ${jsonBytes} bytes JSON`}, ${elapsedMs} ms`
+    );
+
+    return {
+      audioMediaId,
+      sourceDurationSec: probed.durationSec,
+      frameCount: data.frameCount,
+      binaryBytes: binary.byteLength,
+      jsonBytes,
+      elapsedMs,
+    };
+  } finally {
+    await rm(sourcePath, { force: true });
   }
-
-  const elapsedMs = Date.now() - startedAt;
-  console.log(
-    `Analysed ${audioMediaId}: ${data.frameCount} frames, ${binary.byteLength} bytes binary` +
-      `${jsonBytes === null ? "" : `, ${jsonBytes} bytes JSON`}, ${elapsedMs} ms`
-  );
-
-  return {
-    audioMediaId,
-    sourceDurationSec: probed.durationSec,
-    frameCount: data.frameCount,
-    binaryBytes: binary.byteLength,
-    jsonBytes,
-    elapsedMs,
-  };
 }
 
 /**
