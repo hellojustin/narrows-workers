@@ -12,7 +12,6 @@ function config(overrides: Partial<RoutingConfig> = {}): RoutingConfig {
     defaultTranscoder: "mediaconvert",
     seriesIds: new Set(),
     percent: 0,
-    shadow: false,
     ...overrides,
   };
 }
@@ -22,7 +21,6 @@ describe("readRoutingConfig", () => {
     const result = readRoutingConfig({});
     expect(result.defaultTranscoder).toBe("mediaconvert");
     expect(result.percent).toBe(0);
-    expect(result.shadow).toBe(false);
     expect(result.seriesIds.size).toBe(0);
   });
 
@@ -44,13 +42,6 @@ describe("readRoutingConfig", () => {
     expect(readRoutingConfig({ FFMPEG_TRANSCODE_PERCENT: "-5" }).percent).toBe(0);
     expect(readRoutingConfig({ FFMPEG_TRANSCODE_PERCENT: "1000" }).percent).toBe(100);
     expect(readRoutingConfig({ FFMPEG_TRANSCODE_PERCENT: "banana" }).percent).toBe(0);
-  });
-
-  it("enables shadow mode only for an exact true", () => {
-    expect(readRoutingConfig({ FFMPEG_TRANSCODE_SHADOW: "true" }).shadow).toBe(true);
-    expect(readRoutingConfig({ FFMPEG_TRANSCODE_SHADOW: "TRUE" }).shadow).toBe(true);
-    expect(readRoutingConfig({ FFMPEG_TRANSCODE_SHADOW: "1" }).shadow).toBe(false);
-    expect(readRoutingConfig({ FFMPEG_TRANSCODE_SHADOW: "yes" }).shadow).toBe(false);
   });
 });
 
@@ -83,7 +74,6 @@ describe("routeTranscoder", () => {
   it("sends everything to MediaConvert by default", () => {
     const decision = routeTranscoder({ seriesId: "series-1" }, config());
     expect(decision.transcoder).toBe("mediaconvert");
-    expect(decision.shadow).toBe(false);
   });
 
   it("sends everything to ffmpeg once TRANSCODER is ffmpeg", () => {
@@ -153,19 +143,5 @@ describe("routeTranscoder", () => {
     // rather than routing at random.
     const decision = routeTranscoder({ seriesId: null }, config({ percent: 100 }));
     expect(decision.transcoder).toBe("mediaconvert");
-  });
-
-  it("shadows only episodes still on MediaConvert", () => {
-    const onMediaConvert = routeTranscoder({ seriesId: "series-1" }, config({ shadow: true }));
-    expect(onMediaConvert.transcoder).toBe("mediaconvert");
-    expect(onMediaConvert.shadow).toBe(true);
-
-    // Already on ffmpeg: shadowing would transcode twice with nothing to compare.
-    const onFfmpeg = routeTranscoder(
-      { seriesId: "series-1" },
-      config({ shadow: true, seriesIds: new Set(["series-1"]) })
-    );
-    expect(onFfmpeg.transcoder).toBe("ffmpeg");
-    expect(onFfmpeg.shadow).toBe(false);
   });
 });

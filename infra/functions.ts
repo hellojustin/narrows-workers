@@ -298,7 +298,6 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     TRANSCODER: process.env.TRANSCODER ?? "",
     FFMPEG_TRANSCODE_SERIES_IDS: process.env.FFMPEG_TRANSCODE_SERIES_IDS ?? "",
     FFMPEG_TRANSCODE_PERCENT: process.env.FFMPEG_TRANSCODE_PERCENT ?? "",
-    FFMPEG_TRANSCODE_SHADOW: process.env.FFMPEG_TRANSCODE_SHADOW ?? "",
   },
   link: [audioTranscodeQueue, audioAnalysisQueue],
 });
@@ -636,37 +635,6 @@ export const analyzeAudio = new sst.aws.Function("AnalyzeAudio", {
 audioAnalysisQueue.subscribe(analyzeAudio.arn, {
   batch: { size: 1 },
 });
-
-/**
- * Measure Ffmpeg - throughput measurement, non-production stages only.
- *
- * The memory setting for the two ffmpeg functions has to come from measurements on
- * Lambda rather than a laptop, and this bypasses the episode-ingestible guard,
- * which a non-production stage cannot satisfy. It writes only to scratch/.
- */
-export const measureFfmpeg =
-  $app.stage === "production"
-    ? undefined
-    : new sst.aws.Function("MeasureFfmpeg", {
-        name: `narrows-${$app.stage}-measure-ffmpeg`,
-        handler: "packages/functions/src/measure-ffmpeg/handler.main",
-        runtime: "nodejs20.x",
-        architecture: FFMPEG_ARCHITECTURE,
-        timeout: "15 minutes",
-        memory: FFMPEG_MEMORY,
-        storage: "4096 MB",
-        layers: [ffmpegLayerArn],
-        permissions: [
-          {
-            actions: ["s3:GetObject", "s3:PutObject"],
-            resources: [`arn:aws:s3:::${mediaBucketName}/*`],
-          },
-        ],
-        environment: {
-          ...commonEnv,
-          ...ffmpegEnv,
-        },
-      });
 
 // Export the Lambda ARNs for EventBridge rule setup
 export const lambdaArns = {

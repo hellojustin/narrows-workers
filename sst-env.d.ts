@@ -98,10 +98,6 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
-    "MeasureFfmpeg": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
     "OnMediaConvertComplete": {
       "name": string
       "type": "sst.aws.Function"

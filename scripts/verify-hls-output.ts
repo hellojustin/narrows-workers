@@ -7,7 +7,7 @@
  * Usage:
  *   AWS_PROFILE=pond npx tsx scripts/verify-hls-output.ts <audioMediaId>
  *   AWS_PROFILE=pond npx tsx scripts/verify-hls-output.ts <audioMediaId> --bucket audiopond-media-production
- *   AWS_PROFILE=pond npx tsx scripts/verify-hls-output.ts <audioMediaId> --prefix scratch/measure/<id>/hls/
+ *   AWS_PROFILE=pond npx tsx scripts/verify-hls-output.ts <audioMediaId> --prefix some/other/prefix/
  *
  * Defaults to the dev bucket and the prefix from generate-hls-subtitles/paths.ts.
  * Requires ffprobe on PATH.

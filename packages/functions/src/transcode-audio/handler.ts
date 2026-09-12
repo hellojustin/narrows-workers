@@ -12,11 +12,6 @@ import { transcodeToHls, verifyPlaylistAgainstSegments, SEGMENT_SECONDS } from "
 interface TranscodeMessage {
   episodeId: string;
   audioMediaId: string;
-  /**
-   * Set by a shadow run to write somewhere other than the real HLS prefix. When
-   * present the fan-in is skipped, so the output stays invisible to the pipeline.
-   */
-  destinationPrefix?: string;
 }
 
 /**
@@ -65,15 +60,13 @@ export interface TranscodeSummary {
 /**
  * Transcode one episode and upload the result.
  *
- * Exported separately from the handler so the verification harness and the
- * throughput measurement can drive it without constructing an SQS event.
+ * Exported separately from the handler so a test can drive it without
+ * constructing an SQS event.
  */
 export async function transcodeEpisode(params: {
   episodeId: string;
   audioMediaId: string;
   bucketName: string;
-  /** Overrides the destination prefix. Used by the shadow run to write to scratch. */
-  destinationPrefix?: string;
   subtitleQueueUrl?: string;
   timeoutMs?: number;
 }): Promise<TranscodeSummary> {
@@ -81,7 +74,7 @@ export async function transcodeEpisode(params: {
   const startedAt = Date.now();
   const outputDir = scratchDir(audioMediaId);
   const sourcePath = sourcePathFor(audioMediaId);
-  const destinationPrefix = params.destinationPrefix ?? hlsPrefix(audioMediaId);
+  const destinationPrefix = hlsPrefix(audioMediaId);
 
   try {
     const { bytes } = await downloadRawAudio(bucketName, audioMediaId, sourcePath);
@@ -152,8 +145,7 @@ export async function transcodeEpisode(params: {
         `${check.totalDurationSec.toFixed(3)}s, ${elapsedMs} ms`
     );
 
-    // Only fan in for real output. A shadow run must stay invisible to the pipeline.
-    if (!params.destinationPrefix && params.subtitleQueueUrl) {
+    if (params.subtitleQueueUrl) {
       await tryEnqueueAfterTranscode({
         episodeId,
         audioMediaId,
@@ -198,11 +190,8 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
 
   for (const record of event.Records) {
     const message: TranscodeMessage = JSON.parse(record.body);
-    const { episodeId, audioMediaId, destinationPrefix } = message;
-    console.log(
-      `Transcoding episode ${episodeId}, media ${audioMediaId}` +
-        (destinationPrefix ? ` (shadow: ${destinationPrefix})` : "")
-    );
+    const { episodeId, audioMediaId } = message;
+    console.log(`Transcoding episode ${episodeId}, media ${audioMediaId}`);
 
     try {
       if (!(await isEpisodeIngestible(episodeId))) {
@@ -214,20 +203,15 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
         episodeId,
         audioMediaId,
         bucketName,
-        destinationPrefix,
         subtitleQueueUrl,
         timeoutMs: timeoutFromContext(context),
       });
     } catch (error) {
       console.error(`Error transcoding episode ${episodeId}:`, error);
-      // A shadow run must not touch episode status: the episode's real output
-      // came from MediaConvert and is fine.
-      if (!destinationPrefix) {
-        await updateEpisode(episodeId, {
-          processingStatus: "failed",
-          processingError: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
+      await updateEpisode(episodeId, {
+        processingStatus: "failed",
+        processingError: error instanceof Error ? error.message : "Unknown error",
+      });
       // Rethrow so SQS retries and, after 3 attempts, moves the message to the DLQ.
       throw error;
     }
