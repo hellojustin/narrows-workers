@@ -254,6 +254,10 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
       resources: [processingQueue.arn],
     },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [audioTranscodeQueue.arn, audioAnalysisQueue.arn],
+    },
   ],
   environment: {
     ...commonEnv,
@@ -261,7 +265,16 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
     ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url,
+    AUDIO_TRANSCODE_QUEUE_URL: audioTranscodeQueue.url,
+    AUDIO_ANALYSIS_QUEUE_URL: audioAnalysisQueue.url,
+    // Transcoder rollout. Defaults to MediaConvert when unset; see
+    // packages/functions/src/shared/transcoder-routing.ts.
+    TRANSCODER: process.env.TRANSCODER ?? "",
+    FFMPEG_TRANSCODE_SERIES_IDS: process.env.FFMPEG_TRANSCODE_SERIES_IDS ?? "",
+    FFMPEG_TRANSCODE_PERCENT: process.env.FFMPEG_TRANSCODE_PERCENT ?? "",
+    FFMPEG_TRANSCODE_SHADOW: process.env.FFMPEG_TRANSCODE_SHADOW ?? "",
   },
+  link: [audioTranscodeQueue, audioAnalysisQueue],
 });
 processingQueue.subscribe(startProcessing.arn, {
   batch: { size: 1 },

@@ -63,7 +63,7 @@ export interface UploadItem {
   key: string;
   /** Local file to stream, or an in-memory body. Exactly one must be set. */
   filePath?: string;
-  body?: Buffer | string;
+  body?: Buffer | Uint8Array | string;
   contentType?: string;
   cacheControl?: string;
 }

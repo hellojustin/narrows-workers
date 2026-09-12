@@ -12,6 +12,11 @@ import { transcodeToHls, verifyPlaylistAgainstSegments, SEGMENT_SECONDS } from "
 interface TranscodeMessage {
   episodeId: string;
   audioMediaId: string;
+  /**
+   * Set by a shadow run to write somewhere other than the real HLS prefix. When
+   * present the fan-in is skipped, so the output stays invisible to the pipeline.
+   */
+  destinationPrefix?: string;
 }
 
 /**
@@ -182,8 +187,11 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
 
   for (const record of event.Records) {
     const message: TranscodeMessage = JSON.parse(record.body);
-    const { episodeId, audioMediaId } = message;
-    console.log(`Transcoding episode ${episodeId}, media ${audioMediaId}`);
+    const { episodeId, audioMediaId, destinationPrefix } = message;
+    console.log(
+      `Transcoding episode ${episodeId}, media ${audioMediaId}` +
+        (destinationPrefix ? ` (shadow: ${destinationPrefix})` : "")
+    );
 
     try {
       if (!(await isEpisodeIngestible(episodeId))) {
@@ -195,15 +203,20 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
         episodeId,
         audioMediaId,
         bucketName,
+        destinationPrefix,
         subtitleQueueUrl,
         timeoutMs: timeoutFromContext(context),
       });
     } catch (error) {
       console.error(`Error transcoding episode ${episodeId}:`, error);
-      await updateEpisode(episodeId, {
-        processingStatus: "failed",
-        processingError: error instanceof Error ? error.message : "Unknown error",
-      });
+      // A shadow run must not touch episode status: the episode's real output
+      // came from MediaConvert and is fine.
+      if (!destinationPrefix) {
+        await updateEpisode(episodeId, {
+          processingStatus: "failed",
+          processingError: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
       // Rethrow so SQS retries and, after 3 attempts, moves the message to the DLQ.
       throw error;
     }
