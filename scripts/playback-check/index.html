@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HLS playback check</title>
+  <style>
+    body { font: 15px/1.5 -apple-system, system-ui, sans-serif; margin: 20px; max-width: 700px; }
+    #log { background: #111; color: #0f0; padding: 12px; font: 12px/1.5 ui-monospace, monospace;
+           white-space: pre-wrap; border-radius: 6px; min-height: 260px; }
+    .verdict { font-weight: 700; font-size: 17px; padding: 10px; border-radius: 6px; margin: 10px 0; }
+    .pass { background: #d4f5d4; color: #060; }
+    .fail { background: #f5d4d4; color: #600; }
+    .pending { background: #f5f0d4; color: #660; }
+  </style>
+</head>
+<body>
+  <h1>HLS playback check</h1>
+  <p>MPEG-TS audio-only HLS produced by the ffmpeg Lambda.</p>
+  <div id="verdict" class="verdict pending">running…</div>
+  <audio id="player" controls style="width:100%"></audio>
+  <div id="log"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script>
+    const MASTER = "/hls/00035828-bbfd-4de9-9fdc-9438dbdeb60b.m3u8";
+    const EXPECTED_DURATION = 542.1;
+
+    const logEl = document.getElementById("log");
+    const verdictEl = document.getElementById("verdict");
+    const player = document.getElementById("player");
+    const results = {};
+
+    function log(msg) {
+      logEl.textContent += msg + "\n";
+      console.log(msg);
+    }
+
+    function finish(pass, summary) {
+      verdictEl.className = "verdict " + (pass ? "pass" : "fail");
+      verdictEl.textContent = (pass ? "PASS — " : "FAIL — ") + summary;
+      window.__hlsResult = { pass, summary, results };
+    }
+
+    // Native support first: this is the path AVPlayer and Safari take.
+    const nativeSupport = player.canPlayType("application/vnd.apple.mpegurl");
+    log("canPlayType(application/vnd.apple.mpegurl) = " + (nativeSupport || "(empty)"));
+    results.nativeCanPlay = nativeSupport;
+
+    async function run() {
+      if (window.Hls && Hls.isSupported()) {
+        log("Using HLS.js " + Hls.version);
+        results.engine = "hls.js " + Hls.version;
+        const hls = new Hls({ debug: false });
+
+        hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
+          log("MANIFEST_PARSED: " + data.levels.length + " level(s)");
+          results.levels = data.levels.length;
+          results.codec = data.levels[0] && data.levels[0].audioCodec;
+          log("  audioCodec = " + results.codec);
+        });
+        hls.on(Hls.Events.LEVEL_LOADED, (_e, data) => {
+          if (results.fragments) return;
+          results.fragments = data.details.fragments.length;
+          results.totalDuration = data.details.totalduration;
+          log("LEVEL_LOADED: " + results.fragments + " fragments, total " +
+              results.totalDuration.toFixed(3) + "s");
+        });
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          log("ERROR " + data.type + " / " + data.details + (data.fatal ? " (FATAL)" : ""));
+          if (data.fatal) { results.fatalError = data.details; finish(false, "fatal HLS.js error: " + data.details); }
+        });
+
+        hls.loadSource(MASTER);
+        hls.attachMedia(player);
+      } else {
+        log("HLS.js unsupported; relying on native playback");
+        results.engine = "native";
+        player.src = MASTER;
+      }
+
+      // Actually decode audio, not just parse the manifest. A manifest can parse
+      // perfectly while the segments fail to decode.
+      await new Promise((resolve) => {
+        let settled = false;
+        const done = () => { if (!settled) { settled = true; resolve(); } };
+        player.addEventListener("loadedmetadata", () => {
+          log("loadedmetadata: duration = " + player.duration.toFixed(3) + "s");
+          results.reportedDuration = player.duration;
+        });
+        player.addEventListener("error", () => {
+          const err = player.error;
+          log("media element error: code " + (err && err.code) + " " + (err && err.message));
+          results.mediaError = err && err.code;
+          done();
+        });
+        player.addEventListener("timeupdate", () => {
+          if (player.currentTime > 2.0) {
+            results.playedTo = player.currentTime;
+            log("played past " + player.currentTime.toFixed(2) + "s");
+            done();
+          }
+        });
+        player.play().catch((e) => log("play() rejected: " + e.message));
+        setTimeout(done, 20000);
+      });
+
+      // Seek into the middle, which forces loading a segment that is not the first.
+      // A missing timestamp in packed audio shows up here rather than at the start.
+      if (!results.mediaError) {
+        await new Promise((resolve) => {
+          const target = 300;
+          let settled = false;
+          const done = () => { if (!settled) { settled = true; resolve(); } };
+          player.addEventListener("seeked", () => {
+            log("seeked to " + player.currentTime.toFixed(2) + "s");
+            results.seekedTo = player.currentTime;
+          });
+          player.addEventListener("timeupdate", function onTick() {
+            if (player.currentTime > target + 1.0) {
+              results.playedAfterSeek = player.currentTime;
+              log("played past " + player.currentTime.toFixed(2) + "s after seeking");
+              player.removeEventListener("timeupdate", onTick);
+              done();
+            }
+          });
+          player.currentTime = target;
+          player.play().catch(() => {});
+          setTimeout(done, 20000);
+        });
+      }
+
+      const checks = [];
+      if (results.mediaError) checks.push("media element reported error " + results.mediaError);
+      if (results.fatalError) checks.push("fatal HLS error " + results.fatalError);
+      if (results.fragments !== undefined && results.fragments !== 55)
+        checks.push("expected 55 fragments, got " + results.fragments);
+      if (results.totalDuration !== undefined && Math.abs(results.totalDuration - EXPECTED_DURATION) > 1)
+        checks.push("duration " + results.totalDuration.toFixed(2) + "s differs from " + EXPECTED_DURATION);
+      if (!(results.playedTo > 2.0)) checks.push("did not decode past 2s from the start");
+      if (!(results.playedAfterSeek > 301)) checks.push("did not decode past a mid-file seek");
+
+      if (checks.length === 0) {
+        finish(true, "decoded from the start and after seeking to 300s; " +
+                     results.fragments + " fragments, " +
+                     (results.totalDuration || 0).toFixed(2) + "s, codec " + results.codec);
+      } else {
+        finish(false, checks.join("; "));
+      }
+      log("\n" + JSON.stringify(results, null, 2));
+    }
+
+    run();
+  </script>
+</body>
+</html>
