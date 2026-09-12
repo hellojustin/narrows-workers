@@ -207,19 +207,8 @@ async function startAssemblyAITranscription(
   return result.id;
 }
 
-/**
- * Enqueue the ffmpeg HLS transcode.
- *
- * `shadowPrefix` writes to a scratch location instead of the real HLS prefix, so
- * the output can be compared against MediaConvert's without the pipeline ever
- * seeing it. The fan-in checks for the master playlist at the real key, so a
- * shadow run stays invisible.
- */
-async function enqueueFfmpegTranscode(
-  episodeId: string,
-  audioMediaId: string,
-  shadowPrefix?: string
-): Promise<void> {
+/** Enqueue the ffmpeg HLS transcode. */
+async function enqueueFfmpegTranscode(episodeId: string, audioMediaId: string): Promise<void> {
   const queueUrl = process.env.AUDIO_TRANSCODE_QUEUE_URL;
   if (!queueUrl) {
     throw new Error("AUDIO_TRANSCODE_QUEUE_URL must be set to route transcoding to ffmpeg");
@@ -228,7 +217,7 @@ async function enqueueFfmpegTranscode(
   await sqsClient.send(
     new SendMessageCommand({
       QueueUrl: queueUrl,
-      MessageBody: JSON.stringify({ episodeId, audioMediaId, destinationPrefix: shadowPrefix }),
+      MessageBody: JSON.stringify({ episodeId, audioMediaId }),
     })
   );
 }
@@ -293,7 +282,7 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       const decision = routeTranscoder({ seriesId }, routing);
       console.log(
         `Transcoder for episode ${episodeId} (series ${seriesId ?? "unknown"}): ` +
-          `${decision.transcoder}${decision.shadow ? " + shadow" : ""} — ${decision.reason}`
+          `${decision.transcoder} — ${decision.reason}`
       );
 
       // Transcode and transcription run in parallel; neither depends on the other.
@@ -313,15 +302,6 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         console.log(`Enqueued ffmpeg transcode for media ${audioMediaId}`);
       }
       console.log(`Started AssemblyAI transcription: ${transcribeJobName}`);
-
-      if (decision.shadow) {
-        await enqueueFfmpegTranscode(
-          episodeId,
-          audioMediaId,
-          `scratch/shadow/${audioMediaId}/hls/`
-        );
-        console.log(`Enqueued shadow ffmpeg transcode for media ${audioMediaId}`);
-      }
 
       await enqueueAudioAnalysis(episodeId, audioMediaId);
 

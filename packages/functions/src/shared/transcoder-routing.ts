@@ -12,7 +12,6 @@
  *   TRANSCODER                    "mediaconvert" (default) or "ffmpeg"
  *   FFMPEG_TRANSCODE_SERIES_IDS   comma-separated series ids always on ffmpeg
  *   FFMPEG_TRANSCODE_PERCENT      0-100, share of remaining series on ffmpeg
- *   FFMPEG_TRANSCODE_SHADOW       "true" to also run ffmpeg into a scratch prefix
  *
  * The default is MediaConvert, so an unconfigured stage keeps existing behaviour.
  */
@@ -25,13 +24,10 @@ export interface RoutingConfig {
   defaultTranscoder: Transcoder;
   seriesIds: Set<string>;
   percent: number;
-  shadow: boolean;
 }
 
 export interface RoutingDecision {
   transcoder: Transcoder;
-  /** Run ffmpeg into a scratch prefix alongside MediaConvert, comparing later. */
-  shadow: boolean;
   /** Why this episode went where it did, for the log line. */
   reason: string;
 }
@@ -54,7 +50,6 @@ export function readRoutingConfig(env: NodeJS.ProcessEnv = process.env): Routing
         .filter(Boolean)
     ),
     percent: parsePercent(env.FFMPEG_TRANSCODE_PERCENT),
-    shadow: (env.FFMPEG_TRANSCODE_SHADOW ?? "").trim().toLowerCase() === "true",
   };
 }
 
@@ -77,11 +72,11 @@ export function routeTranscoder(
   const { seriesId } = params;
 
   if (config.defaultTranscoder === "ffmpeg") {
-    return { transcoder: "ffmpeg", shadow: false, reason: "TRANSCODER=ffmpeg" };
+    return { transcoder: "ffmpeg", reason: "TRANSCODER=ffmpeg" };
   }
 
   if (seriesId && config.seriesIds.has(seriesId)) {
-    return { transcoder: "ffmpeg", shadow: false, reason: "series in FFMPEG_TRANSCODE_SERIES_IDS" };
+    return { transcoder: "ffmpeg", reason: "series in FFMPEG_TRANSCODE_SERIES_IDS" };
   }
 
   if (seriesId && config.percent > 0) {
@@ -89,17 +84,10 @@ export function routeTranscoder(
     if (bucket < config.percent) {
       return {
         transcoder: "ffmpeg",
-        shadow: false,
         reason: `series bucket ${bucket} < FFMPEG_TRANSCODE_PERCENT ${config.percent}`,
       };
     }
   }
 
-  return {
-    transcoder: "mediaconvert",
-    // Shadow only applies to episodes still on MediaConvert. Shadowing one
-    // already on ffmpeg would transcode it twice for no comparison.
-    shadow: config.shadow,
-    reason: config.shadow ? "mediaconvert with ffmpeg shadow" : "default",
-  };
+  return { transcoder: "mediaconvert", reason: "default" };
 }
