@@ -291,9 +291,14 @@ and everything derived from it lives under `processed/{mediaId}/`, alongside
 `processed/{mediaId}/transcript.json` and `processed/{mediaId}/hls/`.
 
 `waveform.bin` is written for every episode. `waveform.json` is written only for
-analyses of at most 12,000 frames (10 minutes at 20 fps), where it stays around
-1.5 MB; above that the JSON is large enough to be a liability and only the
-binary form is stored.
+episodes of at most 20 minutes, set by `JSON_MAX_DURATION_SEC` in
+`analyze-audio/handler.ts`. At that length it is about 3.3 MB, roughly 1.1 MB
+gzipped. Above it only the binary form is stored, because JSON at full episode
+length reaches 44.9 MB.
+
+The narrows API applies the same 20-minute threshold when deciding whether to
+advertise a `jsonUrl` to clients. The two thresholds have to agree: if the API's
+were higher, clients would be given a URL for an object that was never written.
 
 The unversioned keys always hold the current format version. If a future
 breaking change has to be served at the same time as an older version for

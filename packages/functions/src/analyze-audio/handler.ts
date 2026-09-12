@@ -37,6 +37,44 @@ export function waveformJsonKey(audioMediaId: string): string {
 }
 
 /**
+ * Report the outcome to Narrows, which is what lets the API tell clients a
+ * waveform is available. Writes only waveformStatus, never processingStatus.
+ *
+ * Never throws. A reporting failure must not fail the analysis or send the
+ * message back to SQS, because the waveform files are already uploaded and a
+ * retry would redo the whole decode to fix a status field.
+ */
+async function reportWaveformStatus(
+  episodeId: string,
+  status: "ready" | "failed"
+): Promise<void> {
+  const apiUrl = process.env.NARROWS_API_URL;
+  const apiKey = process.env.NARROWS_API_KEY;
+  if (!apiUrl || !apiKey) return;
+
+  try {
+    const response = await fetch(
+      `${apiUrl}/api/v1/internal/episodes/${episodeId}/waveform`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status }),
+      }
+    );
+    if (!response.ok) {
+      console.error(
+        `Reporting waveform ${status} for episode ${episodeId} returned ${response.status}`
+      );
+    }
+  } catch (error) {
+    console.error(`Failed to report waveform ${status} for episode ${episodeId}:`, error);
+  }
+}
+
+/**
  * Decode arguments for the analysis.
  *
  * The analyser expects interleaved signed 16-bit little-endian PCM at a known
@@ -188,7 +226,7 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
 
   for (const record of event.Records) {
     const message: AnalysisMessage = JSON.parse(record.body);
-    const { audioMediaId, writeJson } = message;
+    const { audioMediaId, episodeId, writeJson } = message;
 
     if (!audioMediaId) {
       // Nothing to work with, and retrying will not help.
@@ -203,10 +241,16 @@ export const main: SQSHandler = async (event: SQSEvent, context?: Context) => {
         writeJson,
         timeoutMs: timeoutFromContext(context),
       });
+      if (episodeId) {
+        await reportWaveformStatus(episodeId, "ready");
+      }
     } catch (error) {
       console.error(`Error analysing media ${audioMediaId}:`, error);
+      if (episodeId) {
+        await reportWaveformStatus(episodeId, "failed");
+      }
       // Rethrow so SQS retries and, after 3 attempts, moves the message to the
-      // DLQ. Episode status is deliberately not touched: waveform data is
+      // DLQ. processingStatus is deliberately not touched: waveform data is
       // additive, and a failure here must not mark a playable episode failed.
       throw error;
     }
