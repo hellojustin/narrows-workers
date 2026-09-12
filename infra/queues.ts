@@ -54,6 +54,16 @@ const subtitleGenerationDlq = new sst.aws.Queue("SubtitleGenerationDlq", {
   transform: { queue: { name: `narrows-${$app.stage}-subtitle-generation-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
 });
 
+const audioTranscodeDlq = new sst.aws.Queue("AudioTranscodeDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-audio-transcode-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
+});
+
+const audioAnalysisDlq = new sst.aws.Queue("AudioAnalysisDlq", {
+  fifo: false,
+  transform: { queue: { name: `narrows-${$app.stage}-audio-analysis-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
+});
+
 // --- Primary queues ---
 
 export const rssRefreshQueue = new sst.aws.Queue("RssRefreshQueue", {
@@ -134,5 +144,36 @@ export const subtitleGenerationQueue = new sst.aws.Queue("SubtitleGenerationQueu
   dlq: { retry: 3, queue: subtitleGenerationDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-subtitle-generation` },
+  },
+});
+
+/**
+ * ffmpeg HLS transcode. Replaces the MediaConvert job started by start-processing.
+ *
+ * Visibility timeout is 16 minutes against the function's 15-minute timeout: SQS
+ * requires the visibility timeout to exceed the function timeout, or a message
+ * becomes visible again while the first invocation is still working on it and the
+ * same episode gets transcoded twice concurrently.
+ */
+export const audioTranscodeQueue = new sst.aws.Queue("AudioTranscodeQueue", {
+  fifo: false,
+  visibilityTimeout: "16 minutes",
+  dlq: { retry: 3, queue: audioTranscodeDlq.arn },
+  transform: {
+    queue: { name: `narrows-${$app.stage}-audio-transcode` },
+  },
+});
+
+/**
+ * Waveform and per-frequency-band analysis. Separate from the transcode so the
+ * existing catalogue can be backfilled without rewriting any HLS output, and so
+ * a bug in the analysis cannot cause repeated re-transcoding.
+ */
+export const audioAnalysisQueue = new sst.aws.Queue("AudioAnalysisQueue", {
+  fifo: false,
+  visibilityTimeout: "16 minutes",
+  dlq: { retry: 3, queue: audioAnalysisDlq.arn },
+  transform: {
+    queue: { name: `narrows-${$app.stage}-audio-analysis` },
   },
 });

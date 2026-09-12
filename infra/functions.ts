@@ -7,6 +7,7 @@
  */
 
 import { mediaBucketName } from "./storage";
+import { ffmpegLayerArn, ffmpegEnv, FFMPEG_ARCHITECTURE } from "./layers";
 import {
   rssRefreshQueue,
   audioDownloadQueue,
@@ -17,16 +18,44 @@ import {
   listeningEventsQueue,
   discoveryQueue,
   subtitleGenerationQueue,
+  audioTranscodeQueue,
+  audioAnalysisQueue,
 } from "./queues";
 
 // VPC configuration for Lambda functions
 // Required for accessing internal services like Graphiti
-const vpcConfig = process.env.VPC_SUBNET_IDS
-  ? {
-      securityGroups: (process.env.VPC_SECURITY_GROUP_IDS ?? "").split(",").filter(Boolean),
-      privateSubnets: (process.env.VPC_SUBNET_IDS ?? "").split(",").filter(Boolean),
-    }
-  : undefined;
+//
+// Placeholder ids are treated as absent. .env.example ships `subnet-xxx` and
+// `sg-xxx`, and passing those through makes CreateFunction fail with
+// "Error occurred while DescribeSecurityGroups", which aborts the whole deploy on
+// the first VPC-attached function rather than saying which value is wrong.
+const AWS_ID_PATTERN = /^(subnet|sg)-[0-9a-f]{8,}$/;
+
+function parseVpcIds(raw: string | undefined, kind: "subnet" | "sg"): string[] {
+  const ids = (raw ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  const invalid = ids.filter((id) => !AWS_ID_PATTERN.test(id));
+  if (invalid.length > 0) {
+    console.warn(
+      `Ignoring VPC configuration: ${invalid.join(", ")} ${
+        invalid.length === 1 ? "is not a valid" : "are not valid"
+      } ${kind} id. Functions that need the VPC will deploy without one.`
+    );
+    return [];
+  }
+  return ids;
+}
+
+const vpcSubnets = parseVpcIds(process.env.VPC_SUBNET_IDS, "subnet");
+const vpcSecurityGroups = parseVpcIds(process.env.VPC_SECURITY_GROUP_IDS, "sg");
+
+const vpcConfig =
+  vpcSubnets.length > 0 && vpcSecurityGroups.length > 0
+    ? { securityGroups: vpcSecurityGroups, privateSubnets: vpcSubnets }
+    : undefined;
 
 // Common environment variables for all functions
 const commonEnv = {
@@ -251,6 +280,10 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
       resources: [processingQueue.arn],
     },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [audioTranscodeQueue.arn, audioAnalysisQueue.arn],
+    },
   ],
   environment: {
     ...commonEnv,
@@ -258,7 +291,16 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
     MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
     ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url,
+    AUDIO_TRANSCODE_QUEUE_URL: audioTranscodeQueue.url,
+    AUDIO_ANALYSIS_QUEUE_URL: audioAnalysisQueue.url,
+    // Transcoder rollout. Defaults to MediaConvert when unset; see
+    // packages/functions/src/shared/transcoder-routing.ts.
+    TRANSCODER: process.env.TRANSCODER ?? "",
+    FFMPEG_TRANSCODE_SERIES_IDS: process.env.FFMPEG_TRANSCODE_SERIES_IDS ?? "",
+    FFMPEG_TRANSCODE_PERCENT: process.env.FFMPEG_TRANSCODE_PERCENT ?? "",
+    FFMPEG_TRANSCODE_SHADOW: process.env.FFMPEG_TRANSCODE_SHADOW ?? "",
   },
+  link: [audioTranscodeQueue, audioAnalysisQueue],
 });
 processingQueue.subscribe(startProcessing.arn, {
   batch: { size: 1 },
@@ -500,6 +542,131 @@ export const discoverEpisodes = new sst.aws.Function("DiscoverEpisodes", {
 discoveryQueue.subscribe(discoverEpisodes.arn, {
   batch: { size: 1 },
 });
+
+/**
+ * ffmpeg functions.
+ *
+ * Both run on arm64 with the static ffmpeg layer.
+ *
+ * 1769 MB is where Lambda allocates one full vCPU. Measured on the dev stage
+ * against a 9-minute episode, raising memory does not make the transcode faster,
+ * because the AAC encoder is single-threaded:
+ *
+ *    1769 MB  29.0 s   18.7x realtime
+ *    3538 MB  32.2 s   16.8x
+ *    5307 MB  32.3 s   16.8x
+ *   10240 MB  32.5 s   16.7x
+ *
+ * Since Lambda bills memory multiplied by time, anything above 1769 MB costs
+ * proportionally more for no gain: $0.0114 against $0.0742 for the same work.
+ *
+ * On a 2h35m episode, 1769 MB ran it in 400.6 s, 23.1x realtime. The longest
+ * episode in the catalogue is 4h34m, which projects to 710 s against the 900 s
+ * ceiling, leaving 21% headroom. Episodes long enough to threaten that are rare:
+ * 14 over three hours, one over four.
+ */
+const FFMPEG_MEMORY = "1769 MB";
+
+// Transcode Audio - HLS transcode with ffmpeg, replaces the MediaConvert job
+export const transcodeAudio = new sst.aws.Function("TranscodeAudio", {
+  name: `narrows-${$app.stage}-transcode-audio`,
+  handler: "packages/functions/src/transcode-audio/handler.main",
+  runtime: "nodejs20.x",
+  architecture: FFMPEG_ARCHITECTURE,
+  timeout: "15 minutes",
+  memory: FFMPEG_MEMORY,
+  // A 4h34m episode produces about 264 MB of segments. ffmpeg reads its input
+  // over HTTPS rather than downloading it, so nothing else occupies /tmp.
+  storage: "4096 MB",
+  concurrency: { reserved: 3 },
+  layers: [ffmpegLayerArn],
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [audioTranscodeQueue.arn],
+    },
+    {
+      actions: ["sqs:SendMessage"],
+      resources: [subtitleGenerationQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ...ffmpegEnv,
+    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
+  },
+  link: [subtitleGenerationQueue],
+});
+audioTranscodeQueue.subscribe(transcodeAudio.arn, {
+  batch: { size: 1 },
+});
+
+// Analyze Audio - waveform peaks and per-frequency-band energy
+export const analyzeAudio = new sst.aws.Function("AnalyzeAudio", {
+  name: `narrows-${$app.stage}-analyze-audio`,
+  handler: "packages/functions/src/analyze-audio/handler.main",
+  runtime: "nodejs20.x",
+  architecture: FFMPEG_ARCHITECTURE,
+  timeout: "15 minutes",
+  memory: FFMPEG_MEMORY,
+  // The analysis streams decoded PCM and writes one output object, so it needs
+  // far less scratch space than the transcode.
+  storage: "1024 MB",
+  concurrency: { reserved: 3 },
+  layers: [ffmpegLayerArn],
+  permissions: [
+    {
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    {
+      actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      resources: [audioAnalysisQueue.arn],
+    },
+  ],
+  environment: {
+    ...commonEnv,
+    ...ffmpegEnv,
+  },
+});
+audioAnalysisQueue.subscribe(analyzeAudio.arn, {
+  batch: { size: 1 },
+});
+
+/**
+ * Measure Ffmpeg - throughput measurement, non-production stages only.
+ *
+ * The memory setting for the two ffmpeg functions has to come from measurements on
+ * Lambda rather than a laptop, and this bypasses the episode-ingestible guard,
+ * which a non-production stage cannot satisfy. It writes only to scratch/.
+ */
+export const measureFfmpeg =
+  $app.stage === "production"
+    ? undefined
+    : new sst.aws.Function("MeasureFfmpeg", {
+        name: `narrows-${$app.stage}-measure-ffmpeg`,
+        handler: "packages/functions/src/measure-ffmpeg/handler.main",
+        runtime: "nodejs20.x",
+        architecture: FFMPEG_ARCHITECTURE,
+        timeout: "15 minutes",
+        memory: FFMPEG_MEMORY,
+        storage: "4096 MB",
+        layers: [ffmpegLayerArn],
+        permissions: [
+          {
+            actions: ["s3:GetObject", "s3:PutObject"],
+            resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+          },
+        ],
+        environment: {
+          ...commonEnv,
+          ...ffmpegEnv,
+        },
+      });
 
 // Export the Lambda ARNs for EventBridge rule setup
 export const lambdaArns = {

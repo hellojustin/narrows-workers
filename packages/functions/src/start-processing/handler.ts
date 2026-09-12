@@ -6,10 +6,13 @@ import {
 } from "@aws-sdk/client-mediaconvert";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { isEpisodeIngestible } from "../shared/episode-guard";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { fetchEpisodeOrNull, isEpisodeIngestible } from "../shared/episode-guard";
+import { readRoutingConfig, routeTranscoder } from "../shared/transcoder-routing";
 
 let mediaConvertClient: MediaConvertClient | null = null;
 const s3Client = new S3Client({});
+const sqsClient = new SQSClient({});
 
 interface ProcessingMessage {
   episodeId: string;
@@ -205,18 +208,70 @@ async function startAssemblyAITranscription(
 }
 
 /**
+ * Enqueue the ffmpeg HLS transcode.
+ *
+ * `shadowPrefix` writes to a scratch location instead of the real HLS prefix, so
+ * the output can be compared against MediaConvert's without the pipeline ever
+ * seeing it. The fan-in checks for the master playlist at the real key, so a
+ * shadow run stays invisible.
+ */
+async function enqueueFfmpegTranscode(
+  episodeId: string,
+  audioMediaId: string,
+  shadowPrefix?: string
+): Promise<void> {
+  const queueUrl = process.env.AUDIO_TRANSCODE_QUEUE_URL;
+  if (!queueUrl) {
+    throw new Error("AUDIO_TRANSCODE_QUEUE_URL must be set to route transcoding to ffmpeg");
+  }
+
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({ episodeId, audioMediaId, destinationPrefix: shadowPrefix }),
+    })
+  );
+}
+
+/**
+ * Enqueue waveform and per-frequency-band analysis.
+ *
+ * Separate from the transcode, and deliberately not fatal: waveform data is
+ * additive, so failing to enqueue it must not fail an otherwise fine episode.
+ */
+async function enqueueAudioAnalysis(episodeId: string, audioMediaId: string): Promise<void> {
+  const queueUrl = process.env.AUDIO_ANALYSIS_QUEUE_URL;
+  if (!queueUrl) return;
+
+  try {
+    await sqsClient.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: JSON.stringify({ episodeId, audioMediaId }),
+      })
+    );
+  } catch (error) {
+    console.error(`Failed to enqueue audio analysis for ${audioMediaId}:`, error);
+  }
+}
+
+/**
  * Start Processing Lambda
  *
- * Triggered by processing-queue
- * Starts both MediaConvert (HLS) and AssemblyAI transcription jobs in parallel
+ * Triggered by processing-queue.
+ * Starts transcription and HLS transcoding in parallel. The transcoder is either
+ * MediaConvert or the ffmpeg Lambda, chosen per series by shared/transcoder-routing.
  */
 export const main: SQSHandler = async (event: SQSEvent) => {
   console.log("Received event:", JSON.stringify(event, null, 2));
 
   const bucketName = process.env.MEDIA_BUCKET_NAME;
   const roleArn = process.env.MEDIACONVERT_ROLE_ARN;
+  const routing = readRoutingConfig();
 
-  if (!bucketName || !roleArn) {
+  // The MediaConvert role is only needed if MediaConvert might still be used.
+  const mayUseMediaConvert = routing.defaultTranscoder !== "ffmpeg";
+  if (!bucketName || (mayUseMediaConvert && !roleArn)) {
     throw new Error("MEDIA_BUCKET_NAME and MEDIACONVERT_ROLE_ARN must be set");
   }
 
@@ -233,18 +288,46 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         continue;
       }
 
-      // Start both jobs in parallel
+      const episode = await fetchEpisodeOrNull(episodeId);
+      const seriesId = (episode?.series_id ?? episode?.seriesId) as string | undefined;
+      const decision = routeTranscoder({ seriesId }, routing);
+      console.log(
+        `Transcoder for episode ${episodeId} (series ${seriesId ?? "unknown"}): ` +
+          `${decision.transcoder}${decision.shadow ? " + shadow" : ""} — ${decision.reason}`
+      );
+
+      // Transcode and transcription run in parallel; neither depends on the other.
+      const transcode =
+        decision.transcoder === "ffmpeg"
+          ? enqueueFfmpegTranscode(episodeId, audioMediaId).then(() => null)
+          : startMediaConvertJob(episodeId, audioMediaId, bucketName, roleArn!);
+
       const [mediaConvertJobId, transcribeJobName] = await Promise.all([
-        startMediaConvertJob(episodeId, audioMediaId, bucketName, roleArn),
+        transcode,
         startAssemblyAITranscription(episodeId, audioMediaId, bucketName),
       ]);
 
-      console.log(`Started MediaConvert job: ${mediaConvertJobId}`);
+      if (mediaConvertJobId) {
+        console.log(`Started MediaConvert job: ${mediaConvertJobId}`);
+      } else {
+        console.log(`Enqueued ffmpeg transcode for media ${audioMediaId}`);
+      }
       console.log(`Started AssemblyAI transcription: ${transcribeJobName}`);
 
-      // Update episode with job IDs (transcribeJobName now holds the AssemblyAI transcript ID)
+      if (decision.shadow) {
+        await enqueueFfmpegTranscode(
+          episodeId,
+          audioMediaId,
+          `scratch/shadow/${audioMediaId}/hls/`
+        );
+        console.log(`Enqueued shadow ffmpeg transcode for media ${audioMediaId}`);
+      }
+
+      await enqueueAudioAnalysis(episodeId, audioMediaId);
+
+      // transcribeJobName holds the AssemblyAI transcript ID.
       await updateEpisode(episodeId, {
-        mediaConvertJobId,
+        ...(mediaConvertJobId ? { mediaConvertJobId } : {}),
         transcribeJobName,
         processingStatus: "processing",
       });

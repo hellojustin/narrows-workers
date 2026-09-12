@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "dotenv -e .env.dev -- sst dev --stage dev",
-    "deploy:dev": "npm test && dotenv -e .env.dev -- sst deploy --stage dev",
-    "deploy:staging": "npm test && dotenv -e .env.staging -- sst deploy --stage staging",
-    "deploy:production": "npm test && dotenv -e .env.production -- sst deploy --stage production",
+    "build:ffmpeg-layer": "node scripts/build-ffmpeg-layer.mjs",
+    "deploy:dev": "npm test && npm run build:ffmpeg-layer && dotenv -e .env.dev -- sst deploy --stage dev",
+    "deploy:staging": "npm test && npm run build:ffmpeg-layer && dotenv -e .env.staging -- sst deploy --stage staging",
+    "deploy:production": "npm test && npm run build:ffmpeg-layer && dotenv -e .env.production -- sst deploy --stage production",
     "remove:dev": "dotenv -e .env.dev -- sst remove --stage dev",
     "remove:staging": "dotenv -e .env.staging -- sst remove --stage staging",
     "remove:production": "dotenv -e .env.production -- sst remove --stage production",

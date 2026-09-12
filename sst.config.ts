@@ -17,6 +17,8 @@ export default $config({
   async run() {
     await import("./infra/storage");
     const queues = await import("./infra/queues");
+    // Layers before functions: the ffmpeg functions reference the layer ARN.
+    await import("./infra/layers");
     await import("./infra/events");
     await import("./infra/functions");
 
@@ -30,6 +32,8 @@ export default $config({
       listeningEventsQueueUrl: queues.listeningEventsQueue.url,
       discoveryQueueUrl: queues.discoveryQueue.url,
       subtitleGenerationQueueUrl: queues.subtitleGenerationQueue.url,
+      audioTranscodeQueueUrl: queues.audioTranscodeQueue.url,
+      audioAnalysisQueueUrl: queues.audioAnalysisQueue.url,
       transcriptionWebhookUrl: (await import("./infra/functions")).onTranscriptionWebhook.url,
     };
   },

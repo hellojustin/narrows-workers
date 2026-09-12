@@ -6,11 +6,31 @@
 
 declare module "sst" {
   export interface Resource {
+    "AnalyzeAudio": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "AudioAnalysisDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "AudioAnalysisQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "AudioDownloadDlq": {
       "type": "sst.aws.Queue"
       "url": string
     }
     "AudioDownloadQueue": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "AudioTranscodeDlq": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "AudioTranscodeQueue": {
       "type": "sst.aws.Queue"
       "url": string
     }
@@ -78,6 +98,10 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
+    "MeasureFfmpeg": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "OnMediaConvertComplete": {
       "name": string
       "type": "sst.aws.Function"
@@ -135,6 +159,10 @@ declare module "sst" {
     "SubtitleGenerationQueue": {
       "type": "sst.aws.Queue"
       "url": string
+    }
+    "TranscodeAudio": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "TranscriptIngestDlq": {
       "type": "sst.aws.Queue"
