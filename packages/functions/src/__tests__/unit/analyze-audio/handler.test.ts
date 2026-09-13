@@ -26,6 +26,7 @@ vi.mock("@/shared/s3-media", () => ({
 
 vi.mock("@/shared/waveform", () => ({
   analyzeS16lePcm: mocks.analyzeS16lePcm,
+  buildWaveformOverview: (data: unknown) => data,
   encodeWaveformBinary: () => new Uint8Array(1_024),
   encodeWaveformJson: () => "{}",
   // vi.mock factories are hoisted above the file's constants, so this repeats
@@ -42,7 +43,12 @@ vi.mock("@/shared/waveform", () => ({
   },
 }));
 
-import { main, waveformBinaryKey, waveformJsonKey } from "@/analyze-audio/handler";
+import {
+  main,
+  waveformBinaryKey,
+  waveformJsonKey,
+  waveformOverviewKey,
+} from "@/analyze-audio/handler";
 
 const audioMediaId = "media-123";
 const episodeId = "episode-456";
@@ -101,6 +107,9 @@ describe("waveform keys", () => {
   it("are fixed, because the API builds client URLs from the same layout", () => {
     expect(waveformBinaryKey(audioMediaId)).toBe(`processed/${audioMediaId}/waveform.bin`);
     expect(waveformJsonKey(audioMediaId)).toBe(`processed/${audioMediaId}/waveform.json`);
+    expect(waveformOverviewKey(audioMediaId)).toBe(
+      `processed/${audioMediaId}/waveform-overview.bin`
+    );
   });
 });
 
@@ -206,5 +215,27 @@ describe("JSON emission", () => {
     const longKeys = mocks.uploadOne.mock.calls.map(([, item]) => item.key);
     expect(longKeys).toContain(`processed/${audioMediaId}/waveform.bin`);
     expect(longKeys).not.toContain(`processed/${audioMediaId}/waveform.json`);
+  });
+});
+
+describe("overview emission", () => {
+  /**
+   * The overview is the object a client fetches to draw the scrubber, so an
+   * episode missing one has no waveform as far as the player is concerned.
+   * Unlike the JSON form it is written at every duration.
+   */
+  it("writes an overview whatever the episode length", async () => {
+    await invoke({ episodeId, audioMediaId });
+    const keys = mocks.uploadOne.mock.calls.map(([, item]) => item.key);
+
+    expect(keys).toContain(`processed/${audioMediaId}/waveform-overview.bin`);
+    expect(
+      mocks.uploadOne.mock.calls.find(
+        ([, item]) => item.key === `processed/${audioMediaId}/waveform-overview.bin`
+      )?.[1]
+    ).toMatchObject({
+      contentType: "application/octet-stream",
+      cacheControl: "public, max-age=31536000, immutable",
+    });
   });
 });

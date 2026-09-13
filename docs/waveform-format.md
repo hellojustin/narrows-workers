@@ -13,10 +13,11 @@ capability; nothing in the system produced waveform data before it.
 | Band data | 16 geometrically spaced bands, 40 Hz to 12 kHz, per channel |
 | Band quantisation | 8 bits over 96 dB below full scale (0.376 dB per step) |
 | Analysis window | 4096-point FFT, Hann window, centred on each frame |
-| Serialisations | `waveform.bin` (binary, always) and `waveform.json` (JSON, short episodes and debugging) |
+| Serialisations | `waveform.bin` (binary, always), `waveform-overview.bin` (decimated peaks, always), and `waveform.json` (JSON, short episodes and debugging) |
 | Byte order | Little-endian throughout |
 | Data ordering | Frame-major within two sections, peaks then bands |
-| S3 keys | `processed/{audioMediaId}/waveform.bin`, `processed/{audioMediaId}/waveform.json` |
+| Overview size | 2048 frames of peaks, about 16 KB, whatever the episode length |
+| S3 keys | `processed/{audioMediaId}/waveform.bin`, `waveform-overview.bin`, `waveform.json` |
 | Version | 1 |
 
 Two kinds of data are stored per frame because clients need two renderings from
@@ -251,6 +252,61 @@ a fifth of the file (2.6 MB against 10.5 MB for a 4h34m episode). A client that
 draws only the envelope reads only that section, and a client that colours the
 waveform reads both.
 
+## Overview form
+
+`waveform-overview.bin` is the same binary format carrying peaks only, decimated
+to at most 2048 frames. It is written for every episode, at every duration.
+
+It exists because range requests cover every view except one. Frame-major
+ordering means any zoomed window is a few kilobytes, but a scrubber showing a
+whole episode at once needs every frame, which is the entire peak section: 1.07
+MB on a 117-minute episode to fill about a thousand pixels. The overview is that
+view precomputed, and it is 16 KB.
+
+| Header field | Value in an overview |
+| --- | --- |
+| `bandCount` | 0 |
+| `bandsBytes` | 0 |
+| `hopSamples` | the source's `hopSamples` times the decimation group |
+| `frameCount` | `ceil(sourceFrameCount / group)`, at most 2048 |
+| `durationSeconds`, `sampleRate`, `channels` | the same as the source |
+| `fftSize`, `bandLowHz`, `bandHighHz` | inherited from the source analysis, with no band data to apply them to |
+
+A reader needs no new code. The magic bytes, version, and header layout are
+unchanged, and a reader that locates sections through `peaksOffset` and
+`bandsOffset` finds an empty band section. It must not assume 20 fps, which the
+Frame rate section already requires: the overview's rate is whatever
+`sampleRate / hopSamples` gives, 0.29 fps on a 117-minute episode.
+
+Measured on production objects:
+
+| Episode | Source frames | Peak section | Overview | Group |
+| --- | --- | --- | --- | --- |
+| 2 min | 2,430 | 19 KB | 9,784 B | 2:1 |
+| 42 min | 50,209 | 392 KB | 16,136 B | 25:1 |
+| 55 min | 65,428 | 511 KB | 16,424 B | 32:1 |
+| 117 min | 140,811 | 1,100 KB | 16,392 B | 69:1 |
+
+### Decimation
+
+Each output frame covers a whole number of input frames, so `hopSamples` stays
+an exact multiple of the source's and an output frame maps onto a known span of
+`waveform.bin`. A client that draws the overview and then zooms converts between
+the two grids without a rounding rule.
+
+Peaks are combined by taking the extremes of the group — the minimum of the
+minima and the maximum of the maxima — not the mean. A mean pulls every
+transient towards zero, which at 69:1 would render a two-hour episode as a flat
+band. The extremes keep the envelope the same shape at every zoom level, and
+guarantee the loudest moment in the episode appears in the overview.
+
+Band levels are dropped rather than decimated. Spectral colour is four fifths of
+the file, and a whole-episode scrubber does not draw it; a client that wants
+colour range-requests the band bytes for the window it is showing.
+
+Episodes short enough to fall under 2048 frames — below about 102 seconds at 20
+fps — get a group of 1, so their overview is a copy of the peak section.
+
 ## Versioning
 
 The format will change once a client renders it, so version detection comes
@@ -283,6 +339,7 @@ ID:
 
 ```
 processed/{audioMediaId}/waveform.bin
+processed/{audioMediaId}/waveform-overview.bin
 processed/{audioMediaId}/waveform.json
 ```
 
@@ -290,7 +347,8 @@ This matches the existing layout, where `raw/{mediaId}` is the original audio
 and everything derived from it lives under `processed/{mediaId}/`, alongside
 `processed/{mediaId}/transcript.json` and `processed/{mediaId}/hls/`.
 
-`waveform.bin` is written for every episode. `waveform.json` is written only for
+`waveform.bin` and `waveform-overview.bin` are written for every episode.
+`waveform.json` is written only for
 episodes of at most 20 minutes, set by `JSON_MAX_DURATION_SEC` in
 `analyze-audio/handler.ts`. At that length it is about 3.3 MB, roughly 1.1 MB
 gzipped. Above it only the binary form is stored, because JSON at full episode
@@ -311,6 +369,7 @@ oldest version still supported.
 | Object | Content-Type | Cache-Control |
 | --- | --- | --- |
 | `waveform.bin` | `application/octet-stream` | `public, max-age=31536000, immutable` |
+| `waveform-overview.bin` | `application/octet-stream` | `public, max-age=31536000, immutable` |
 | `waveform.json` | `application/json` | `public, max-age=31536000, immutable` |
 
 The content is derived from an immutable media ID and never rewritten in place,
@@ -319,7 +378,9 @@ invalidation. A new format version arrives as a new object, and a re-analysis of
 the same audio produces the same bytes.
 
 `Accept-Ranges: bytes` is required, since range requests are how a client fetches
-one time window. S3 origins provide it.
+one time window. S3 origins provide it, and the CloudFront distribution in front
+of them passes it through: a request for bytes 0–63 of a 5.6 MB `waveform.bin`
+returns `206` with 64 bytes.
 
 Compression is worth having on the JSON form and is optional on the binary form.
 Measured on a 9-minute episode: JSON 1,479,537 bytes compresses to 510,298 with
@@ -341,6 +402,18 @@ second of audio.
 | 9m02s (measured) | 10,842 | 434 KB | 248 KB | 1.5 MB | 510 KB |
 | 4h34m (extrapolated) | 328,800 | 13.2 MB | ~7.5 MB | ~44.9 MB | ~15.5 MB |
 
+Those are whole-file sizes, and no client should be downloading them. What a
+client actually transfers, measured against CloudFront on the 117-minute
+episode `2482c72e`:
+
+| Request | Bytes |
+| --- | --- |
+| Overview, for the scrubber | 16,392 |
+| Header alone | 64 |
+| 30 s window, envelope | 4,800 |
+| 30 s window, envelope and spectral | 24,000 |
+| Whole file | 5,632,504 |
+
 The 4h34m figures are why the binary form exists. JSON at that length is 44.9 MB
 for the same information, because every byte-sized band level becomes one to
 three ASCII digits and a comma.
@@ -350,8 +423,9 @@ three ASCII digits and a comma.
 `packages/functions/src/shared/waveform.ts` and the `waveform-*.ts` modules
 beside it: `waveform-fft.ts` (radix-2 FFT, Hann window),
 `waveform-bands.ts` (band edges, bin assignment, dBFS, quantisation),
-`waveform-analyzer.ts` (streaming analysis of interleaved s16le PCM), and
-`waveform-encode.ts` (both serialisations, in both directions).
+`waveform-analyzer.ts` (streaming analysis of interleaved s16le PCM),
+`waveform-encode.ts` (both serialisations, in both directions), and
+`waveform-overview.ts` (decimation to the overview form).
 
 The analyzer consumes PCM incrementally and never holds the decoded audio: a
 4h34m episode is about 3.2 GB of 48 kHz stereo PCM, which does not fit in a

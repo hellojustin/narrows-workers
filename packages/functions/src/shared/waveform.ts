@@ -42,4 +42,9 @@ export {
   type WaveformJson,
 } from "./waveform-encode";
 
+export {
+  buildWaveformOverview,
+  WAVEFORM_OVERVIEW_TARGET_FRAMES,
+} from "./waveform-overview";
+
 export { Fft, hannWindow, windowPowerGain } from "./waveform-fft";

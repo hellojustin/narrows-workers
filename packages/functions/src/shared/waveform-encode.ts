@@ -204,7 +204,9 @@ export function decodeWaveformBinary(bytes: Uint8Array): WaveformData {
     hopSamples,
     fftSize,
     bandCount,
-    bandEdgesHz: computeBandEdges(bandCount, bandLowHz, bandHighHz),
+    // An overview carries peaks only and reports bandCount 0, which has no
+    // edges to compute.
+    bandEdgesHz: bandCount > 0 ? computeBandEdges(bandCount, bandLowHz, bandHighHz) : [],
     bandLowHz,
     bandHighHz,
     dynamicRangeDb,
