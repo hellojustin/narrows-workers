@@ -66,6 +66,14 @@ const audioAnalysisDlq = new sst.aws.Queue("AudioAnalysisDlq", {
 
 // --- Primary queues ---
 
+/**
+ * Every visibility timeout below must exceed its consumer function's timeout.
+ * If they are equal, an invocation that runs to its limit can have its message
+ * become visible again as it finishes, so the same work runs twice concurrently.
+ *
+ * Six queues were set equal to their function timeout and were duplicating work
+ * because of it. The convention here is function timeout plus one minute.
+ */
 export const rssRefreshQueue = new sst.aws.Queue("RssRefreshQueue", {
   fifo: false,
   visibilityTimeout: "5 minutes",
@@ -77,7 +85,7 @@ export const rssRefreshQueue = new sst.aws.Queue("RssRefreshQueue", {
 
 export const audioDownloadQueue = new sst.aws.Queue("AudioDownloadQueue", {
   fifo: false,
-  visibilityTimeout: "10 minutes",
+  visibilityTimeout: "11 minutes",
   dlq: { retry: 3, queue: audioDownloadDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-audio-download` },
@@ -86,7 +94,7 @@ export const audioDownloadQueue = new sst.aws.Queue("AudioDownloadQueue", {
 
 export const imageDownloadQueue = new sst.aws.Queue("ImageDownloadQueue", {
   fifo: false,
-  visibilityTimeout: "5 minutes",
+  visibilityTimeout: "6 minutes",
   dlq: { retry: 3, queue: imageDownloadDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-image-download` },
@@ -95,16 +103,21 @@ export const imageDownloadQueue = new sst.aws.Queue("ImageDownloadQueue", {
 
 export const imageProcessingQueue = new sst.aws.Queue("ImageProcessingQueue", {
   fifo: false,
-  visibilityTimeout: "5 minutes",
+  visibilityTimeout: "6 minutes",
   dlq: { retry: 3, queue: imageProcessingDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-image-processing` },
   },
 });
 
+/**
+ * Redelivery here is the most expensive of any queue: start-processing enqueues
+ * both the transcode and the transcription, so a duplicate message starts two of
+ * each and the episode is ingested twice.
+ */
 export const processingQueue = new sst.aws.Queue("ProcessingQueue", {
   fifo: false,
-  visibilityTimeout: "2 minutes",
+  visibilityTimeout: "3 minutes",
   dlq: { retry: 3, queue: processingDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-processing` },
@@ -131,16 +144,21 @@ export const listeningEventsQueue = new sst.aws.Queue("ListeningEventsQueue", {
 
 export const discoveryQueue = new sst.aws.Queue("DiscoveryQueue", {
   fifo: false,
-  visibilityTimeout: "10 minutes",
+  visibilityTimeout: "11 minutes",
   dlq: { retry: 3, queue: discoveryDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-discovery` },
   },
 });
 
+/**
+ * A duplicate message here reaches the unguarded window in generate-hls-subtitles
+ * and enqueues transcript ingest a second time, duplicating the episode's
+ * segments and chapters. See PROD-218.
+ */
 export const subtitleGenerationQueue = new sst.aws.Queue("SubtitleGenerationQueue", {
   fifo: false,
-  visibilityTimeout: "5 minutes",
+  visibilityTimeout: "6 minutes",
   dlq: { retry: 3, queue: subtitleGenerationDlq.arn },
   transform: {
     queue: { name: `narrows-${$app.stage}-subtitle-generation` },
@@ -149,11 +167,6 @@ export const subtitleGenerationQueue = new sst.aws.Queue("SubtitleGenerationQueu
 
 /**
  * ffmpeg HLS transcode. Replaces the MediaConvert job started by start-processing.
- *
- * Visibility timeout is 16 minutes against the function's 15-minute timeout: SQS
- * requires the visibility timeout to exceed the function timeout, or a message
- * becomes visible again while the first invocation is still working on it and the
- * same episode gets transcoded twice concurrently.
  */
 export const audioTranscodeQueue = new sst.aws.Queue("AudioTranscodeQueue", {
   fifo: false,
