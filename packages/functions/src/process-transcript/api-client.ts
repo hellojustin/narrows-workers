@@ -56,61 +56,65 @@ export async function updateEpisodeSpeakers(
   });
 }
 
-/**
- * Upsert a chapter via Narrows API
- */
-export async function upsertChapter(chapter: Chapter): Promise<void> {
-  const response = await fetch(`${getApiUrl()}/api/v1/chapters/${chapter.id}`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${getApiKey()}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      episodeId: chapter.episodeId,
-      type: chapter.type,
-      title: chapter.title,
-      summary: chapter.summary,
-      episodeStartSec: chapter.episodeStartSec,
-      episodeEndSec: chapter.episodeEndSec,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to upsert chapter: ${response.status} - ${errorText}`);
-  }
+export interface ReplaceAnalysisResult {
+  chaptersCreated: number;
+  segmentsCreated: number;
+  chaptersRemoved: number;
+  segmentsRemoved: number;
 }
 
 /**
- * Upsert a segment via Narrows API
+ * Replace an episode's chapters and segments in one call.
+ *
+ * Must stay a single request. This endpoint clears the episode's existing rows
+ * and writes the new ones inside one transaction holding a lock on the episode,
+ * which is what stops two concurrent ingestion passes from both appending their
+ * results. Writing chapters and segments separately, or per row as this client
+ * used to, reintroduces the duplication in PROD-218.
  */
-export async function upsertSegment(segment: Segment): Promise<void> {
-  const response = await fetch(`${getApiUrl()}/api/v1/segments/${segment.id}`, {
+export async function replaceEpisodeAnalysis(
+  episodeId: string,
+  chapters: Chapter[],
+  segments: Segment[]
+): Promise<ReplaceAnalysisResult> {
+  const response = await fetch(`${getApiUrl()}/api/v1/episodes/${episodeId}/analysis`, {
     method: 'PUT',
     headers: {
       Authorization: `Bearer ${getApiKey()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      episodeId: segment.episodeId,
-      chapterId: segment.chapterId,
-      type: segment.type,
-      episodeStartSec: segment.episodeStartSec,
-      episodeEndSec: segment.episodeEndSec,
-      lucidity: segment.lucidity,
-      polarity: segment.polarity,
-      arousal: segment.arousal,
-      subjectivity: segment.subjectivity,
-      humor: segment.humor,
-      transcriptExcerpt: segment.transcriptExcerpt,
+      chapters: chapters.map((chapter) => ({
+        id: chapter.id,
+        type: chapter.type,
+        title: chapter.title,
+        summary: chapter.summary,
+        episodeStartSec: chapter.episodeStartSec,
+        episodeEndSec: chapter.episodeEndSec,
+      })),
+      segments: segments.map((segment) => ({
+        id: segment.id,
+        chapterId: segment.chapterId,
+        type: segment.type,
+        episodeStartSec: segment.episodeStartSec,
+        episodeEndSec: segment.episodeEndSec,
+        lucidity: segment.lucidity,
+        polarity: segment.polarity,
+        arousal: segment.arousal,
+        subjectivity: segment.subjectivity,
+        humor: segment.humor,
+        transcriptExcerpt: segment.transcriptExcerpt,
+      })),
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Failed to upsert segment: ${response.status} - ${errorText}`);
+    throw new Error(`Failed to replace episode analysis: ${response.status} - ${errorText}`);
   }
+
+  const { data } = await response.json();
+  return data as ReplaceAnalysisResult;
 }
 
 /**
