@@ -6,6 +6,7 @@ import { probeAudio, spawnFfmpeg, timeoutFromContext } from "../shared/ffmpeg";
 import { downloadRawAudio, uploadOne } from "../shared/s3-media";
 import {
   analyzeS16lePcm,
+  buildWaveformOverview,
   encodeWaveformBinary,
   encodeWaveformJson,
   WAVEFORM_DEFAULTS,
@@ -34,6 +35,10 @@ export function waveformBinaryKey(audioMediaId: string): string {
 
 export function waveformJsonKey(audioMediaId: string): string {
   return `processed/${audioMediaId}/waveform.json`;
+}
+
+export function waveformOverviewKey(audioMediaId: string): string {
+  return `processed/${audioMediaId}/waveform-overview.bin`;
 }
 
 /**
@@ -105,6 +110,7 @@ export interface AnalysisSummary {
   sourceDurationSec: number;
   frameCount: number;
   binaryBytes: number;
+  overviewBytes: number;
   jsonBytes: number | null;
   elapsedMs: number;
 }
@@ -176,6 +182,17 @@ export async function analyzeEpisode(params: {
       cacheControl: IMMUTABLE_CACHE,
     });
 
+    // The scrubber view, precomputed. Drawing a whole episode from waveform.bin
+    // means reading its entire peak section, which is megabytes on a long
+    // episode; this is the same envelope in 16 KB. See docs/waveform-format.md.
+    const overview = encodeWaveformBinary(buildWaveformOverview(data));
+    await uploadOne(bucketName, {
+      key: `${prefix}waveform-overview.bin`,
+      body: overview,
+      contentType: "application/octet-stream",
+      cacheControl: IMMUTABLE_CACHE,
+    });
+
     const shouldWriteJson = params.writeJson ?? probed.durationSec <= JSON_MAX_DURATION_SEC;
     let jsonBytes: number | null = null;
     if (shouldWriteJson) {
@@ -191,7 +208,8 @@ export async function analyzeEpisode(params: {
 
     const elapsedMs = Date.now() - startedAt;
     console.log(
-      `Analysed ${audioMediaId}: ${data.frameCount} frames, ${binary.byteLength} bytes binary` +
+      `Analysed ${audioMediaId}: ${data.frameCount} frames, ${binary.byteLength} bytes binary, ` +
+        `${overview.byteLength} bytes overview` +
         `${jsonBytes === null ? "" : `, ${jsonBytes} bytes JSON`}, ${elapsedMs} ms`
     );
 
@@ -200,6 +218,7 @@ export async function analyzeEpisode(params: {
       sourceDurationSec: probed.durationSec,
       frameCount: data.frameCount,
       binaryBytes: binary.byteLength,
+      overviewBytes: overview.byteLength,
       jsonBytes,
       elapsedMs,
     };
