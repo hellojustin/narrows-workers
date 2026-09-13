@@ -21,8 +21,7 @@ import {
   fetchEpisode,
   fetchSeries,
   updateEpisodeSpeakers,
-  upsertChapter,
-  upsertSegment,
+  replaceEpisodeAnalysis,
   updateEpisodeComplete,
   updateEpisodeError,
 } from './api-client';
@@ -126,12 +125,6 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       );
       console.log(`Identified ${chapters.length} chapters`);
 
-      // Save chapters to API
-      for (const chapter of chapters) {
-        await upsertChapter(chapter);
-        console.log(`Saved chapter: ${chapter.title} (${chapter.type})`);
-      }
-
       // 5. Identify segments
       console.log('Identifying segments...');
       const identifiedSegments = await identifySegments(
@@ -144,11 +137,15 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       );
       console.log(`Identified ${identifiedSegments.length} segments`);
 
-      // Save segments to API
-      for (const segment of identifiedSegments) {
-        await upsertSegment(segment);
-      }
-      console.log(`Saved ${identifiedSegments.length} segments`);
+      // Chapters and segments are written together, after both have been
+      // identified, so that a failure in segment identification leaves the
+      // episode's previous analysis intact rather than half-replaced.
+      const replaced = await replaceEpisodeAnalysis(episodeId, chapters, identifiedSegments);
+      console.log(
+        `Replaced analysis for episode ${episodeId}: ` +
+          `wrote ${replaced.chaptersCreated} chapters and ${replaced.segmentsCreated} segments, ` +
+          `superseding ${replaced.chaptersRemoved} chapters and ${replaced.segmentsRemoved} segments`
+      );
 
       // 6. Ingest segments to Graphiti
       console.log('Ingesting segments to Graphiti...');
