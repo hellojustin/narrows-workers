@@ -27,6 +27,28 @@ interface AnalysisMessage {
  */
 const JSON_MAX_DURATION_SEC = 20 * 60;
 
+/**
+ * How far the frame count may fall short of the probed duration before the
+ * analysis is rejected: the greater of 5% and a two-second floor.
+ *
+ * The two numbers are not equally reliable. `frameCount` counts the samples
+ * ffmpeg actually decoded. The probed duration comes from the container, and
+ * for mp3 without a Xing header ffprobe extrapolates it from the bitrate, so it
+ * is an estimate. When they disagree the frame count is the better number.
+ *
+ * Only a shortfall is checked. Decoding more audio than the container declares
+ * cannot be a truncated decode; it means the declared duration was low. Six
+ * episodes of the 17,146 in the catalogue backfill disagreed by more than the
+ * one second this check used to allow, up to 61s, and one by only 1.4s on a
+ * 25-minute episode.
+ *
+ * A decode that dies mid-stream is already caught by ffmpeg's exit code. What
+ * this guards is the case where ffmpeg exits cleanly having given up early, and
+ * a 5% shortfall still catches that: half a file missing is 50%.
+ */
+const FRAME_SHORTFALL_TOLERANCE = 0.05;
+const FRAME_SHORTFALL_FLOOR_SEC = 2;
+
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 
 export function waveformBinaryKey(audioMediaId: string): string {
@@ -166,10 +188,29 @@ export async function analyzeEpisode(params: {
     await proc.completion;
 
     const expectedFrames = Math.floor(probed.durationSec * data.framesPerSecond);
-    if (Math.abs(data.frameCount - expectedFrames) > data.framesPerSecond) {
+    const shortfallFrames = expectedFrames - data.frameCount;
+    const allowedShortfall = Math.max(
+      FRAME_SHORTFALL_FLOOR_SEC * data.framesPerSecond,
+      expectedFrames * FRAME_SHORTFALL_TOLERANCE
+    );
+
+    if (shortfallFrames > allowedShortfall) {
       throw new Error(
         `Analysis of ${audioMediaId} produced ${data.frameCount} frames but the source ` +
-          `duration ${probed.durationSec.toFixed(3)}s implies about ${expectedFrames}`
+          `duration ${probed.durationSec.toFixed(3)}s implies about ${expectedFrames}, ` +
+          `a shortfall of ${(shortfallFrames / data.framesPerSecond).toFixed(1)}s against an ` +
+          `allowance of ${(allowedShortfall / data.framesPerSecond).toFixed(1)}s`
+      );
+    }
+
+    // Logged rather than thrown, because a disagreement this size is normal for
+    // mp3 and the analysis is still usable. It is worth seeing in the logs if it
+    // ever becomes common.
+    if (Math.abs(shortfallFrames) > data.framesPerSecond) {
+      console.warn(
+        `Frame count for ${audioMediaId} differs from the probed duration by ` +
+          `${(-shortfallFrames / data.framesPerSecond).toFixed(1)}s ` +
+          `(${data.frameCount} frames against about ${expectedFrames}); accepting the analysis`
       );
     }
 

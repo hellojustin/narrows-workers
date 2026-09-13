@@ -218,6 +218,77 @@ describe("JSON emission", () => {
   });
 });
 
+/**
+ * frameCount counts what ffmpeg decoded; the probed duration is the container's
+ * claim, which ffprobe extrapolates from bitrate for mp3 without a Xing header.
+ * The check exists to catch a decode that gave up early while still exiting 0,
+ * so it measures a shortfall only and allows the greater of 5% and two seconds.
+ */
+describe("frame count guard", () => {
+  function analyseWith(frameCount: number, durationSec: number) {
+    mocks.probeAudio.mockResolvedValue({
+      durationSec,
+      sampleRate: 48_000,
+      channels: 2,
+      codecName: "mp3",
+    });
+    mocks.spawnFfmpeg.mockReturnValue({
+      stdout: Readable.from([Buffer.alloc(0)]),
+      completion: Promise.resolve({ stderr: "", exitCode: 0 }),
+    });
+    mocks.analyzeS16lePcm.mockResolvedValue({
+      frameCount,
+      framesPerSecond: FRAMES_PER_SECOND,
+      channels: 2,
+      bandCount: 16,
+      peaks: [],
+      bands: [],
+    });
+    return invoke({ episodeId, audioMediaId });
+  }
+
+  // Every episode that failed the old one-second tolerance across the
+  // 17,146-episode catalogue backfill, with its real frame count and duration.
+  it.each([
+    ["e3e5129b, 61.3s short", 32_254, 1_674.0],
+    ["125469b7, 57.3s short", 28_534, 1_484.0],
+    ["9cb86063, 11.9s short", 17_978, 910.835],
+    ["c80622d2, 11.8s short", 17_981, 910.934],
+    ["854bef1d, 59.0s over", 19_830, 932.557],
+    ["345ff1e8, 1.4s over", 30_341, 1_515.7],
+  ])("accepts %s", async (_label, frameCount, durationSec) => {
+    await expect(analyseWith(frameCount, durationSec)).resolves.toBeUndefined();
+    expect(mocks.uploadOne).toHaveBeenCalled();
+  });
+
+  it("still rejects a decode that produced half the audio", async () => {
+    await expect(analyseWith(9_000, 900)).rejects.toThrow(/shortfall of 450\.0s/);
+  });
+
+  it("reports the episode failed when it rejects", async () => {
+    await expect(analyseWith(9_000, 900)).rejects.toThrow();
+
+    expect(JSON.parse(String(waveformCalls()[0][1]?.body))).toEqual({ status: "failed" });
+  });
+
+  it("never rejects for producing more audio than the container declares", async () => {
+    // Twice the declared duration. The container was wrong, not the decode.
+    await expect(analyseWith(36_000, 900)).resolves.toBeUndefined();
+  });
+
+  it("applies the two-second floor so short episodes are not held to 5%", async () => {
+    // A 10 s episode is 200 frames, of which 5% is half a second.
+    await expect(analyseWith(170, 10)).resolves.toBeUndefined();
+    await expect(analyseWith(150, 10)).rejects.toThrow(/shortfall/);
+  });
+
+  it("applies the 5% tolerance on long episodes, where it exceeds the floor", async () => {
+    // 4h34m: 5% is 822 s, far more than the floor.
+    await expect(analyseWith(312_360, 16_440)).resolves.toBeUndefined();
+    await expect(analyseWith(300_000, 16_440)).rejects.toThrow(/shortfall/);
+  });
+});
+
 describe("overview emission", () => {
   /**
    * The overview is the object a client fetches to draw the scrubber, so an
