@@ -206,6 +206,13 @@ export const onTranscriptionWebhook = new sst.aws.Function("OnTranscriptionWebho
       actions: ["s3:PutObject", "s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
+    // Required by the subtitle fan-in check. Without ListBucket, a HeadObject on
+    // a key that does not exist yet answers 403 instead of 404, which the caller
+    // cannot tell apart from a real permission failure.
+    {
+      actions: ["s3:ListBucket"],
+      resources: [`arn:aws:s3:::${mediaBucketName}`],
+    },
     {
       actions: ["sqs:SendMessage"],
       resources: [subtitleGenerationQueue.arn],
@@ -384,6 +391,13 @@ export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComple
     {
       actions: ["s3:GetObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    // Required by the subtitle fan-in check. Without ListBucket, a HeadObject on
+    // a key that does not exist yet answers 403 instead of 404, which the caller
+    // cannot tell apart from a real permission failure.
+    {
+      actions: ["s3:ListBucket"],
+      resources: [`arn:aws:s3:::${mediaBucketName}`],
     },
     {
       actions: ["sqs:SendMessage"],
@@ -583,6 +597,13 @@ export const transcodeAudio = new sst.aws.Function("TranscodeAudio", {
     {
       actions: ["s3:GetObject", "s3:PutObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
+    },
+    // Required by the subtitle fan-in check. Without ListBucket, a HeadObject on
+    // a key that does not exist yet answers 403 instead of 404, which the caller
+    // cannot tell apart from a real permission failure.
+    {
+      actions: ["s3:ListBucket"],
+      resources: [`arn:aws:s3:::${mediaBucketName}`],
     },
     {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
