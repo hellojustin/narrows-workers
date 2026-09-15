@@ -1,6 +1,7 @@
 import type { SQSEvent, SQSHandler } from "aws-lambda";
 import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { POND_BOT_USER_AGENT } from "../shared/pond-bot-user-agent";
 
 const s3Client = new S3Client({});
 const sqsClient = new SQSClient({});
@@ -120,6 +121,11 @@ async function updateMediaRecord(
   });
 }
 
+/** Headers for the enclosure GET. Identifies ingest as PondBot, not Pond/. */
+export function enclosureFetchHeaders(): { "User-Agent": string } {
+  return { "User-Agent": POND_BOT_USER_AGENT };
+}
+
 /**
  * Extract file extension from URL or content type
  */
@@ -156,7 +162,9 @@ async function downloadAndUploadAudio(
 ): Promise<{ sizeKb: number }> {
   console.log(`Downloading audio from: ${enclosureUrl}`);
 
-  const response = await fetch(enclosureUrl);
+  const response = await fetch(enclosureUrl, {
+    headers: enclosureFetchHeaders(),
+  });
   if (!response.ok) {
     throw new Error(`Failed to download audio: ${response.statusText}`);
   }

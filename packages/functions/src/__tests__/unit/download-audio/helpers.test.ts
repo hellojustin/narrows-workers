@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { getFileExtension } from "@/download-audio/handler";
+import { enclosureFetchHeaders, getFileExtension } from "@/download-audio/handler";
+import { POND_BOT_USER_AGENT } from "@/shared/pond-bot-user-agent";
 
 describe("getFileExtension", () => {
   it("extracts extension from URL path", () => {
@@ -25,5 +26,14 @@ describe("getFileExtension", () => {
   it("handles URLs with query strings", () => {
     const url = "https://example.com/audio/episode.mp3?token=abc&expires=123";
     expect(getFileExtension(url, "audio/mpeg")).toBe("mp3");
+  });
+});
+
+describe("enclosureFetchHeaders", () => {
+  it("identifies the ingest GET as PondBot", () => {
+    expect(enclosureFetchHeaders()).toEqual({
+      "User-Agent": POND_BOT_USER_AGENT,
+    });
+    expect(enclosureFetchHeaders()["User-Agent"]).toMatch(/^PondBot\//);
   });
 });

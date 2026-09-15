@@ -7,7 +7,10 @@ import {
   extractOwner,
   extractCategories,
   isRssParseError,
+  enclosureFromRssItem,
 } from "@/fetch-rss/handler";
+import { rssParser } from "@/shared/rss-parser";
+import { POND_BOT_USER_AGENT } from "@/shared/pond-bot-user-agent";
 
 describe("parseDuration", () => {
   it("returns null for undefined", () => {
@@ -183,5 +186,70 @@ describe("isRssParseError", () => {
     expect(isRssParseError(new Error("fetch failed"))).toBe(false);
     expect(isRssParseError(new Error("Episode sync failed (500)"))).toBe(false);
     expect(isRssParseError("not an error")).toBe(false);
+  });
+});
+
+const PREFIXED_ENCLOSURE =
+  "https://dts.podtrac.com/redirect.mp3/pdst.fm/e/cdn.example.com/ep1.mp3?src=rss&t=1&token=a%2Fb";
+
+function enclosureFeedXml(url: string): string {
+  const escaped = url
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Test</title>
+    <item>
+      <title>Episode</title>
+      <guid>guid-1</guid>
+      <enclosure url="${escaped}" type="audio/mpeg" length="28800000"/>
+    </item>
+  </channel>
+</rss>`;
+}
+
+describe("enclosure URL fidelity", () => {
+  it("keeps a Podtrac prefix and query string byte-identical through parse", async () => {
+    const feed = await rssParser.parseString(enclosureFeedXml(PREFIXED_ENCLOSURE));
+    const fromParser = feed.items[0]?.enclosure?.url;
+    const fromMapper = enclosureFromRssItem(feed.items[0] ?? {});
+
+    expect(fromParser).toBe(PREFIXED_ENCLOSURE);
+    expect(fromMapper.enclosureUrl).toBe(PREFIXED_ENCLOSURE);
+    expect(fromMapper.enclosureUrl).toContain("dts.podtrac.com");
+    expect(fromMapper.enclosureUrl).toContain("pdst.fm");
+    expect(fromMapper.enclosureUrl).toContain("?src=rss&t=1&token=a%2Fb");
+    expect(fromMapper.enclosureType).toBe("audio/mpeg");
+    expect(fromMapper.enclosureLength).toBe(28800000);
+  });
+
+  it("does not resolve, unwrap, or strip the enclosure", async () => {
+    const feed = await rssParser.parseString(enclosureFeedXml(PREFIXED_ENCLOSURE));
+    const url = enclosureFromRssItem(feed.items[0] ?? {}).enclosureUrl;
+
+    expect(url).not.toBe("https://cdn.example.com/ep1.mp3");
+    expect(url).not.toMatch(/^https:\/\/cdn\.example\.com\//);
+  });
+
+  it("passes a missing enclosure through as undefined", () => {
+    expect(enclosureFromRssItem({})).toEqual({
+      enclosureUrl: undefined,
+      enclosureType: undefined,
+      enclosureLength: undefined,
+    });
+  });
+});
+
+describe("PondBot user agent on feed fetches", () => {
+  it("configures rss-parser so parseURL identifies as PondBot", () => {
+    const headers = (
+      rssParser as unknown as { options: { headers: Record<string, string> } }
+    ).options.headers;
+
+    expect(headers["User-Agent"]).toBe(POND_BOT_USER_AGENT);
+    expect(POND_BOT_USER_AGENT).toBe("PondBot/1.0 (+https://pondaudio.app)");
+    expect(POND_BOT_USER_AGENT).toMatch(/^PondBot\//);
+    expect(POND_BOT_USER_AGENT).not.toMatch(/^Pond\//);
   });
 });
