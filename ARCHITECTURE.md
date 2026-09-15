@@ -27,7 +27,8 @@ narrows-workers/
 ├── infra/
 │   ├── storage.ts             # S3 bucket reference
 │   ├── queues.ts              # SQS queue definitions
-│   ├── events.ts              # EventBridge rules and cron schedules
+│   ├── events.ts              # EventBridge cron schedules
+│   ├── layers.ts              # ffmpeg Lambda layer
 │   └── functions.ts           # Lambda function definitions
 └── packages/functions/src/
     ├── fetch-rss/             # RSS feed fetching and episode upsert
@@ -35,9 +36,11 @@ narrows-workers/
     ├── download-image/        # Series/episode artwork download to S3
     ├── process-image/         # Image format conversion (PNG/JPEG) and color extraction
     ├── resize-image/          # On-demand image resizing (Function URL, CloudFront)
-    ├── start-processing/      # Start MediaConvert & Transcribe in parallel
-    ├── on-media-convert-complete/  # MediaConvert EventBridge event handler
-    ├── on-transcribe-complete/     # Transcribe EventBridge event handler
+    ├── start-processing/      # Enqueue transcode-audio + AssemblyAI in parallel
+    ├── transcode-audio/       # ffmpeg HLS transcode
+    ├── analyze-audio/         # Waveform and per-frequency-band analysis
+    ├── on-transcription-webhook/  # AssemblyAI completion: write transcript.json
+    ├── generate-hls-subtitles/    # WebVTT + master playlist patch; fan-in to ingest
     ├── process-transcript/    # Main transcript processing pipeline
     │   ├── handler.ts         # Orchestrator
     │   ├── types.ts           # Type definitions
@@ -48,31 +51,52 @@ narrows-workers/
     │   └── ingest-to-graphiti.ts  # Graphiti ingestion
     ├── ingest-listening-events/   # SQS consumer: write listening events to Narrows API
     ├── rollup-listening/          # Hourly: aggregate listening events into summaries
-    └── build-taste-profiles/      # Every 5 min: compute per-user taste profiles
+    ├── build-taste-profiles/      # Every 5 min: compute per-user taste profiles
+    ├── check-stale-transcriptions/ # Recover missed AssemblyAI webhooks
+    └── discover-episodes/         # LLM current-events podcast discovery
 ```
 
 ## Pipeline Flow
 
 ### Audio ingestion
 
+`start-processing` enqueues `transcode-audio` and starts AssemblyAI in parallel. It also enqueues `analyze-audio` (waveform); that path does not join the subtitle fan-in.
+
 ```
 RSS Feed → fetch-rss → download-audio → start-processing
                   │                           │
-                  │                 ┌─────────┴──────────┐
-                  │                 ▼                     ▼
-                  │        start-mediaconvert      start-transcribe
-                  │                 │                     │
-                  │           EventBridge             EventBridge
-                  │                 │                     │
-                  │    on-media-convert-complete  on-transcribe-complete
-                  │                                       │
-                  │                              process-transcript
-                  │                                       │
-                  │                              Graphiti /data API
+                  │              ┌────────────┼────────────┐
+                  │              ▼            ▼            ▼
+                  │     transcode-audio   AssemblyAI   analyze-audio
+                  │        (ffmpeg HLS)   (webhook)    (waveform)
+                  │              │            │
+                  │              │            ▼
+                  │              │   on-transcription-webhook
+                  │              │   writes transcript.json
+                  │              │            │
+                  │   tryEnqueueAfter        tryEnqueueAfter
+                  │   Transcode              Transcription
+                  │   HeadObject             HeadObject
+                  │   transcript.json        master playlist
+                  │              │            │
+                  │              └─────┬──────┘
+                  │                    ▼
+                  │         generate-hls-subtitles
+                  │         (whichever finishes second)
+                  │                    ▼
+                  │           process-transcript
+                  │                    ▼
+                  │           Graphiti /data API
                   │
                   └── download-image → process-image
                       (artwork)       (PNG/JPEG + colors)
 ```
+
+`transcode-audio` writes HLS (segments, then the media playlist, then the master) and calls `tryEnqueueAfterTranscode`, which `HeadObject`s `transcript.json`. `on-transcription-webhook` writes `transcript.json` and calls `tryEnqueueAfterTranscription`, which `HeadObject`s the master playlist. Whichever side finishes second enqueues `generate-hls-subtitles`.
+
+A custom EventBridge event from the transcode Lambda was rejected. The fan-in is already a `HeadObject` on the other side's output. An extra async hop would add a failure mode and would not change the join.
+
+Nothing outside the deleted `on-media-convert-complete` handler consumed MediaConvert Job State Change events. This repo has no CloudWatch alarms or metric filters keyed on those events. Default-bus rules for those events are leftover and are removed by `docs/eventbridge-teardown.md`.
 
 ### Listening events
 
@@ -128,7 +152,7 @@ The `process-transcript` Lambda is the core processing function. It:
    - Sends segments to `POST /data` endpoint
    - Includes all metadata and metrics
 
-### Transcript Structure (from AWS Transcribe)
+### Transcript Structure (`transcript.json`)
 
 ```typescript
 interface TranscriptSegment {
@@ -164,12 +188,16 @@ Each segment is sent to Graphiti with this format:
 | Queue | Purpose | Visibility Timeout |
 |-------|---------|---------|
 | rss-refresh-queue | RSS fetch triggers | 5 min |
-| audio-download-queue | Audio downloads | 10 min |
-| image-download-queue | Series/episode artwork downloads | 5 min |
-| image-processing-queue | Image format conversion | 5 min |
-| processing-queue | MediaConvert/Transcribe start | 2 min |
+| audio-download-queue | Audio downloads | 11 min |
+| image-download-queue | Series/episode artwork downloads | 6 min |
+| image-processing-queue | Image format conversion | 6 min |
+| processing-queue | Start transcode + transcription | 3 min |
+| audio-transcode-queue | ffmpeg HLS transcode | 16 min |
+| audio-analysis-queue | Waveform analysis | 16 min |
+| subtitle-generation-queue | generate-hls-subtitles | 6 min |
 | transcript-ingest-queue | process-transcript | 16 min |
 | listening-events-queue | Listening event ingestion | 2 min |
+| discovery-queue | discover-episodes | 11 min |
 
 ## EventBridge Schedules
 
@@ -177,8 +205,12 @@ Each segment is sent to Graphiti with this format:
 |----------|----------|---------|
 | `rate(1 hour)` | rollup-listening | Aggregate raw listening events into per-user/episode summaries |
 | `rate(5 minutes)` | build-taste-profiles | Compute and upsert user taste profiles from summaries + Graphiti entities |
+| `rate(15 minutes)` | check-stale-transcriptions | Recover episodes whose AssemblyAI webhook was missed or whose handler failed |
+| `rate(30 minutes)` | discover-episodes | LLM current-events discovery via PodcastIndex and Graphiti topic seeding |
 
-MediaConvert and Transcribe completion events are routed from the **default EventBridge bus** via AWS CLI-managed rules (not SST constructs, since SST v3 lacks native support for default-bus subscriptions).
+These crons are SST constructs and run only in production (`infra/events.ts`).
+
+MediaConvert Job State Change and Transcribe Job State Change rules on the **default EventBridge bus** are leftover from the AWS-managed job path. They were created with the AWS CLI, not SST. Remove them with `docs/eventbridge-teardown.md`.
 
 ## Environment Variables
 
@@ -191,8 +223,7 @@ MediaConvert and Transcribe completion events are routed from the **default Even
 | `GRAPHITI_API_KEY` | Graphiti authentication |
 | `GRAPHITI_GRAPH_ID` | Target graph ID |
 | `OPENAI_API_KEY` | OpenAI API for LLM calls |
-| `MEDIACONVERT_ENDPOINT` | AWS MediaConvert endpoint |
-| `MEDIACONVERT_ROLE_ARN` | IAM role for MediaConvert |
+| `ASSEMBLYAI_API_KEY` | AssemblyAI speech-to-text |
 | `VPC_SUBNET_IDS` | VPC subnets (for Graphiti VPC access) |
 | `VPC_SECURITY_GROUP_IDS` | VPC security groups |
 | `TZ` | Pinned to `UTC` for every function (see below) |

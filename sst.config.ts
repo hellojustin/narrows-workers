@@ -21,6 +21,8 @@ export default $config({
     await import("./infra/layers");
     await import("./infra/events");
     await import("./infra/functions");
+    await import("./infra/alarms");
+    await import("./infra/dashboards");
 
     return {
       rssRefreshQueueUrl: queues.rssRefreshQueue.url,
