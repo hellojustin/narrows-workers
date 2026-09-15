@@ -54,12 +54,12 @@ const subtitleGenerationDlq = new sst.aws.Queue("SubtitleGenerationDlq", {
   transform: { queue: { name: `narrows-${$app.stage}-subtitle-generation-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
 });
 
-const audioTranscodeDlq = new sst.aws.Queue("AudioTranscodeDlq", {
+export const audioTranscodeDlq = new sst.aws.Queue("AudioTranscodeDlq", {
   fifo: false,
   transform: { queue: { name: `narrows-${$app.stage}-audio-transcode-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
 });
 
-const audioAnalysisDlq = new sst.aws.Queue("AudioAnalysisDlq", {
+export const audioAnalysisDlq = new sst.aws.Queue("AudioAnalysisDlq", {
   fifo: false,
   transform: { queue: { name: `narrows-${$app.stage}-audio-analysis-dlq`, messageRetentionSeconds: DLQ_RETENTION_SECONDS } },
 });

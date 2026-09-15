@@ -3,8 +3,7 @@
  *
  * Scheduled work only. MediaConvert and Transcribe default-bus rules are
  * leftover from the AWS-managed job path and are not created here. Remove
- * them with docs/eventbridge-teardown.md. After PROD-168 the leftover
- * handlers (on-media-convert-complete, on-transcribe-complete) go away.
+ * them with docs/eventbridge-teardown.md.
  *
  * mediaConvertPattern and transcribePattern were documentation-only and
  * unused; they are gone from this file.

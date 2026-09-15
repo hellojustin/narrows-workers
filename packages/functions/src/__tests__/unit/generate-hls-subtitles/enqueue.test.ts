@@ -34,7 +34,6 @@ vi.mock("@aws-sdk/client-sqs", () => {
 });
 
 import {
-  tryEnqueueAfterMediaConvert,
   tryEnqueueAfterTranscode,
   tryEnqueueAfterTranscription,
 } from "@/generate-hls-subtitles/enqueue";
@@ -174,13 +173,5 @@ describe("the two sides together", () => {
     await tryEnqueueAfterTranscription(params);
 
     expect(mocks.sqsSend).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("tryEnqueueAfterMediaConvert", () => {
-  it("is the same function as tryEnqueueAfterTranscode", () => {
-    // The alias keeps on-media-convert-complete working until MediaConvert is
-    // decommissioned. If they ever diverge, one producer stops fanning in.
-    expect(tryEnqueueAfterMediaConvert).toBe(tryEnqueueAfterTranscode);
   });
 });

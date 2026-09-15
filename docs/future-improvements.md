@@ -207,20 +207,12 @@ and generate a random UUID as the value.
 
 ## 6. Remove Legacy AWS Transcribe Infrastructure
 
-**Status**: PROD-168. EventBridge rules and invoke permissions: `docs/eventbridge-teardown.md`.
+**Status**: Done in code (PROD-168). `on-transcribe-complete` and
+`on-media-convert-complete` are deleted. Default-bus EventBridge rules
+and leftover Lambda invoke permissions are a manual AWS CLI step:
+`docs/eventbridge-teardown.md`.
 
-`transcribePattern` is already gone from `infra/events.ts`. The leftover
-handlers and their EventBridge wiring are removed in PROD-168. Run
-`docs/eventbridge-teardown.md` first (default-bus rules plus Lambda
-permissions on `narrows-production-on-transcribe-complete` and
-`narrows-production-on-mediaconvert-complete`). Then delete:
-
-1. `on-transcribe-complete` Lambda (`packages/functions/src/on-transcribe-complete/`)
-2. Its definition in `infra/functions.ts` (`onTranscribeComplete`)
-3. The `lambdaArns.onTranscribeComplete` export in `infra/functions.ts`
-4. `on-media-convert-complete` and `lambdaArns.onMediaConvertComplete` (same ticket)
-
-To check for in-flight Transcribe jobs before removing:
+To check for leftover Transcribe jobs:
 ```bash
 aws transcribe list-transcription-jobs --status IN_PROGRESS --region us-east-1
 ```

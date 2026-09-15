@@ -250,19 +250,24 @@ export const checkStaleTranscriptions = new sst.aws.Function("CheckStaleTranscri
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
     {
+      actions: ["s3:ListBucket"],
+      resources: [`arn:aws:s3:::${mediaBucketName}`],
+    },
+    {
       actions: ["sqs:SendMessage"],
-      resources: [subtitleGenerationQueue.arn],
+      resources: [subtitleGenerationQueue.arn, audioTranscodeQueue.arn],
     },
   ],
   environment: {
     ...commonEnv,
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
     SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
+    AUDIO_TRANSCODE_QUEUE_URL: audioTranscodeQueue.url,
   },
-  link: [subtitleGenerationQueue],
+  link: [subtitleGenerationQueue, audioTranscodeQueue],
 });
 
-// Start Processing - initiates both MediaConvert (HLS) and AssemblyAI transcription in parallel
+// Start Processing - ffmpeg HLS transcode + AssemblyAI transcription in parallel
 export const startProcessing = new sst.aws.Function("StartProcessing", {
   name: `narrows-${$app.stage}-start-processing`,
   handler: "packages/functions/src/start-processing/handler.main",
@@ -271,14 +276,6 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
   memory: "512 MB",
   concurrency: { reserved: 1 },
   permissions: [
-    {
-      actions: ["mediaconvert:CreateJob", "mediaconvert:DescribeEndpoints"],
-      resources: ["*"],
-    },
-    {
-      actions: ["iam:PassRole"],
-      resources: [process.env.MEDIACONVERT_ROLE_ARN ?? "*"],
-    },
     {
       actions: ["s3:GetObject", "s3:PutObject"],
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
@@ -294,17 +291,10 @@ export const startProcessing = new sst.aws.Function("StartProcessing", {
   ],
   environment: {
     ...commonEnv,
-    MEDIACONVERT_ENDPOINT: process.env.MEDIACONVERT_ENDPOINT ?? "",
-    MEDIACONVERT_ROLE_ARN: process.env.MEDIACONVERT_ROLE_ARN ?? "",
     ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY ?? "",
     ASSEMBLYAI_WEBHOOK_URL: onTranscriptionWebhook.url,
     AUDIO_TRANSCODE_QUEUE_URL: audioTranscodeQueue.url,
     AUDIO_ANALYSIS_QUEUE_URL: audioAnalysisQueue.url,
-    // Transcoder rollout. Defaults to MediaConvert when unset; see
-    // packages/functions/src/shared/transcoder-routing.ts.
-    TRANSCODER: process.env.TRANSCODER ?? "",
-    FFMPEG_TRANSCODE_SERIES_IDS: process.env.FFMPEG_TRANSCODE_SERIES_IDS ?? "",
-    FFMPEG_TRANSCODE_PERCENT: process.env.FFMPEG_TRANSCODE_PERCENT ?? "",
   },
   link: [audioTranscodeQueue, audioAnalysisQueue],
 });
@@ -374,65 +364,6 @@ export const generateHlsSubtitles = new sst.aws.Function("GenerateHlsSubtitles",
 });
 subtitleGenerationQueue.subscribe(generateHlsSubtitles.arn, {
   batch: { size: 1 },
-});
-
-// On MediaConvert Complete - handles MediaConvert completion events
-export const onMediaConvertComplete = new sst.aws.Function("OnMediaConvertComplete", {
-  name: `narrows-${$app.stage}-on-mediaconvert-complete`,
-  handler: "packages/functions/src/on-media-convert-complete/handler.main",
-  runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
-  concurrency: { reserved: 1 },
-  logging: {
-    logGroup: `/aws/lambda/narrows-${$app.stage}-on-mediaconvert-complete`,
-  },
-  permissions: [
-    {
-      actions: ["s3:GetObject"],
-      resources: [`arn:aws:s3:::${mediaBucketName}/*`],
-    },
-    // Required by the subtitle fan-in check. Without ListBucket, a HeadObject on
-    // a key that does not exist yet answers 403 instead of 404, which the caller
-    // cannot tell apart from a real permission failure.
-    {
-      actions: ["s3:ListBucket"],
-      resources: [`arn:aws:s3:::${mediaBucketName}`],
-    },
-    {
-      actions: ["sqs:SendMessage"],
-      resources: [subtitleGenerationQueue.arn],
-    },
-  ],
-  environment: {
-    ...commonEnv,
-    SUBTITLE_GENERATION_QUEUE_URL: subtitleGenerationQueue.url,
-  },
-  link: [subtitleGenerationQueue],
-});
-
-// On Transcribe Complete - handles Transcribe completion events
-export const onTranscribeComplete = new sst.aws.Function("OnTranscribeComplete", {
-  name: `narrows-${$app.stage}-on-transcribe-complete`,
-  handler: "packages/functions/src/on-transcribe-complete/handler.main",
-  runtime: "nodejs20.x",
-  timeout: "1 minute",
-  memory: "256 MB",
-  concurrency: { reserved: 1 },
-  logging: {
-    logGroup: `/aws/lambda/narrows-${$app.stage}-on-transcribe-complete`,
-  },
-  environment: {
-    ...commonEnv,
-    TRANSCRIPT_INGEST_QUEUE_URL: transcriptIngestQueue.url,
-  },
-  link: [transcriptIngestQueue],
-  permissions: [
-    {
-      actions: ["sqs:SendMessage"],
-      resources: [transcriptIngestQueue.arn],
-    },
-  ],
 });
 
 // Resize Image - on-demand image resizing for CloudFront
@@ -657,8 +588,3 @@ audioAnalysisQueue.subscribe(analyzeAudio.arn, {
   batch: { size: 1 },
 });
 
-// Export the Lambda ARNs for EventBridge rule setup
-export const lambdaArns = {
-  onMediaConvertComplete: onMediaConvertComplete.arn,
-  onTranscribeComplete: onTranscribeComplete.arn,
-};

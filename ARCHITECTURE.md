@@ -41,8 +41,6 @@ narrows-workers/
     ├── analyze-audio/         # Waveform and per-frequency-band analysis
     ├── on-transcription-webhook/  # AssemblyAI completion: write transcript.json
     ├── generate-hls-subtitles/    # WebVTT + master playlist patch; fan-in to ingest
-    ├── on-media-convert-complete/ # Leftover MediaConvert EventBridge handler (PROD-168)
-    ├── on-transcribe-complete/    # Leftover Transcribe EventBridge handler (PROD-168)
     ├── process-transcript/    # Main transcript processing pipeline
     │   ├── handler.ts         # Orchestrator
     │   ├── types.ts           # Type definitions
@@ -98,7 +96,7 @@ RSS Feed → fetch-rss → download-audio → start-processing
 
 A custom EventBridge event from the transcode Lambda was rejected. The fan-in is already a `HeadObject` on the other side's output. An extra async hop would add a failure mode and would not change the join.
 
-Nothing outside `on-media-convert-complete` consumed MediaConvert Job State Change events. This repo has no CloudWatch alarms or metric filters keyed on those events. After PROD-168, `on-media-convert-complete` and `on-transcribe-complete` go away. Default-bus rules for those events are leftover and are removed by `docs/eventbridge-teardown.md`.
+Nothing outside the deleted `on-media-convert-complete` handler consumed MediaConvert Job State Change events. This repo has no CloudWatch alarms or metric filters keyed on those events. Default-bus rules for those events are leftover and are removed by `docs/eventbridge-teardown.md`.
 
 ### Listening events
 
@@ -212,7 +210,7 @@ Each segment is sent to Graphiti with this format:
 
 These crons are SST constructs and run only in production (`infra/events.ts`).
 
-MediaConvert Job State Change and Transcribe Job State Change rules on the **default EventBridge bus** are leftover from the AWS-managed job path. They were created with the AWS CLI, not SST. Nothing in this repo besides `on-media-convert-complete` consumed MediaConvert Job State Change events (no alarms or metric filters keyed on them). Remove the leftover rules with `docs/eventbridge-teardown.md`. After PROD-168 the leftover handlers go away.
+MediaConvert Job State Change and Transcribe Job State Change rules on the **default EventBridge bus** are leftover from the AWS-managed job path. They were created with the AWS CLI, not SST. Remove them with `docs/eventbridge-teardown.md`.
 
 ## Environment Variables
 

@@ -5,6 +5,7 @@
  * completed but whose webhook was never delivered (or our handler failed).
  *
  * For each episode stuck in "processing" for > 30 minutes:
+ *   - If the HLS master is missing, re-enqueue audio-transcode (stalled transcode)
  *   - Poll AssemblyAI to check the current transcript status
  *   - If completed: run the full completion flow (fetch, adapt, write S3, enqueue)
  *   - If error: mark episode as failed
@@ -12,7 +13,13 @@
  */
 
 import type { Handler } from "aws-lambda";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { completeTranscription, updateEpisode } from "../on-transcription-webhook/complete-transcription";
+import { masterManifestKey } from "../generate-hls-subtitles/paths";
+
+const s3Client = new S3Client({});
+const sqsClient = new SQSClient({});
 
 interface EpisodeRow {
   id: string;
@@ -29,6 +36,34 @@ interface AssemblyAIStatusResponse {
 }
 
 const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+async function hlsMasterExists(bucket: string, audioMediaId: string): Promise<boolean> {
+  try {
+    await s3Client.send(
+      new HeadObjectCommand({ Bucket: bucket, Key: masterManifestKey(audioMediaId) })
+    );
+    return true;
+  } catch (error) {
+    const err = error as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (err.name === "NotFound" || err.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function enqueueTranscode(
+  queueUrl: string,
+  episodeId: string,
+  audioMediaId: string
+): Promise<void> {
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({ episodeId, audioMediaId }),
+    })
+  );
+}
 
 /**
  * Fetch all episodes currently in "processing" status from the Narrows API.
@@ -103,8 +138,16 @@ export const main: Handler = async () => {
   const assemblyApiKey = process.env.ASSEMBLYAI_API_KEY;
   const bucketName = process.env.MEDIA_BUCKET_NAME;
   const subtitleGenerationQueueUrl = process.env.SUBTITLE_GENERATION_QUEUE_URL;
+  const audioTranscodeQueueUrl = process.env.AUDIO_TRANSCODE_QUEUE_URL;
 
-  if (!apiUrl || !apiKey || !assemblyApiKey || !bucketName || !subtitleGenerationQueueUrl) {
+  if (
+    !apiUrl ||
+    !apiKey ||
+    !assemblyApiKey ||
+    !bucketName ||
+    !subtitleGenerationQueueUrl ||
+    !audioTranscodeQueueUrl
+  ) {
     throw new Error("Missing required environment variables");
   }
 
@@ -117,9 +160,26 @@ export const main: Handler = async () => {
     const transcriptId = episode.transcribeJobName;
     const audioMediaId = episode.audioMediaId;
 
-    if (!transcriptId || !audioMediaId) {
+    if (!audioMediaId) {
+      console.warn(`Episode ${episode.id} is processing but has no audioMediaId — skipping`);
+      continue;
+    }
+
+    try {
+      const hasHls = await hlsMasterExists(bucketName, audioMediaId);
+      if (!hasHls) {
+        console.log(
+          `Episode ${episode.id}: HLS master missing after stale threshold — re-enqueueing transcode`
+        );
+        await enqueueTranscode(audioTranscodeQueueUrl, episode.id, audioMediaId);
+      }
+    } catch (error) {
+      console.error(`Error checking HLS for episode ${episode.id}:`, error);
+    }
+
+    if (!transcriptId) {
       console.warn(
-        `Episode ${episode.id} is processing but has no transcribeJobName or audioMediaId — skipping`
+        `Episode ${episode.id} is processing but has no transcribeJobName — skipping transcription recovery`
       );
       continue;
     }
