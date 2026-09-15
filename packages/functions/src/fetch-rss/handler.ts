@@ -71,6 +71,30 @@ export function pickBestImageUrl(
 }
 
 /**
+ * Enclosure fields as they go on the episode sync payload.
+ *
+ * Pass-through only. Attribution fires the stored URL from the listener's
+ * device; if this function resolved a redirect, stripped a prefix, dropped a
+ * query string, or re-encoded the URL, the prefix service would never see
+ * the request and the download would not count.
+ */
+export function enclosureFromRssItem(item: {
+  enclosure?: { url?: string; type?: string; length?: string | number };
+}): {
+  enclosureUrl: string | undefined;
+  enclosureType: string | undefined;
+  enclosureLength: number | undefined;
+} {
+  const enclosure = item.enclosure;
+  return {
+    enclosureUrl: enclosure?.url,
+    enclosureType: enclosure?.type,
+    enclosureLength:
+      enclosure?.length != null ? Number(enclosure.length) : undefined,
+  };
+}
+
+/**
  * Parse duration string (HH:MM:SS or MM:SS or seconds) to seconds
  */
 export function parseDuration(duration: string | undefined): number | null {
@@ -324,14 +348,14 @@ export const main: SQSHandler = async (event: SQSEvent) => {
         const pubDate = item.pubDate ? new Date(item.pubDate) : null;
         if (pubDate && pubDate < cutoffDate) continue;
 
-        const enclosure = item.enclosure;
+        const enclosure = enclosureFromRssItem(item);
         episodeBatch.push({
           guid: item.guid || item.link || item.title || "",
           title: item.title || "Untitled Episode",
           description: item.contentSnippet || item.content,
-          enclosureUrl: enclosure?.url,
-          enclosureType: enclosure?.type,
-          enclosureLength: enclosure?.length != null ? Number(enclosure.length) : undefined,
+          enclosureUrl: enclosure.enclosureUrl,
+          enclosureType: enclosure.enclosureType,
+          enclosureLength: enclosure.enclosureLength,
           link: item.link,
           imageUrl: pickBestImageUrl(item.itunesImage, undefined),
           duration: parseDuration(item.itunesDuration as string | undefined) ?? undefined,
