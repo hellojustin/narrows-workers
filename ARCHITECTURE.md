@@ -94,9 +94,48 @@ RSS Feed → fetch-rss → download-audio → start-processing
 
 `transcode-audio` writes HLS (segments, then the media playlist, then the master) and calls `tryEnqueueAfterTranscode`, which `HeadObject`s `transcript.json`. `on-transcription-webhook` writes `transcript.json` and calls `tryEnqueueAfterTranscription`, which `HeadObject`s the master playlist. Whichever side finishes second enqueues `generate-hls-subtitles`.
 
-A custom EventBridge event from the transcode Lambda was rejected. The fan-in is already a `HeadObject` on the other side's output. An extra async hop would add a failure mode and would not change the join.
+Completion is S3 object existence, not a job event. The transcode side treats `transcript.json` as “transcription is done.” The transcription side treats the HLS master playlist as “transcode is done.” The master must be written last so a `HeadObject` success cannot see a partial stream. `NotFound` / 404 means the other side is still running; any other error is a real failure. A custom EventBridge event from the transcode Lambda was rejected — the fan-in already is a `HeadObject` on the other side's output.
 
-Nothing outside the deleted `on-media-convert-complete` handler consumed MediaConvert Job State Change events. This repo has no CloudWatch alarms or metric filters keyed on those events. Default-bus rules for those events are leftover and are removed by `docs/eventbridge-teardown.md`.
+`check-stale-transcriptions` (15-minute cron) recovers a missed AssemblyAI webhook. If an episode has been in `processing` for more than 30 minutes and the HLS master is missing, it also re-enqueues `audio-transcode`.
+
+MediaConvert and Transcribe Job State Change rules on the default EventBridge bus were deleted after the cutover. The procedure is in `docs/eventbridge-teardown.md`.
+
+Output contracts: [HLS output specification](docs/hls-output-spec.md) and [waveform data format](docs/waveform-format.md).
+
+### S3 layout
+
+Production bucket: `audiopond-media-production` (`MEDIA_BUCKET_NAME`). Keys are derived from the media id. HLS key helpers live in `generate-hls-subtitles/paths.ts`.
+
+```
+raw/{audioMediaId}                         original download, no extension
+
+processed/{audioMediaId}/
+  transcript.json                          AssemblyAI; written by on-transcription-webhook
+  waveform.bin                             always, from analyze-audio
+  waveform-overview.bin                    always, decimated peaks
+  waveform.json                            short episodes only
+  hls/
+    {audioMediaId}.m3u8                    master playlist (written last)
+    {audioMediaId}_audio.m3u8              media playlist
+    {audioMediaId}_audio_NNNNN.ts          ffmpeg segments, from 00000
+    {audioMediaId}_audio_NNNNN.aac         MediaConvert-era segments, from 00001
+    transcript.m3u8                        WebVTT playlist
+    transcript_NNNNN.vtt                   subtitle segments, from 00001
+
+processed/{imageMediaId}/
+  base.jpg
+  base.png
+```
+
+Artwork uses a different media id than the audio. There is no progressive-download `audio.mp3` and no `hls/audio.m3u8`.
+
+The catalogue holds both segment containers. New output is MPEG-TS (`.ts`). Episodes transcoded before the ffmpeg cutover are raw ADTS (`.aac`). Each media playlist names its own segments, so a client never assumes an extension. No backfill is planned. Decision: the HLS spec (PROD-149); playback of both forms: PROD-152.
+
+Verified 2026-09-21 against CloudFront (`https://media.audiopond.net`):
+
+- ffmpeg: Letters from an American, “Bacon’s Rebellion”, `audio_media_id` `b7cf02ee-fe21-479a-996c-f5f9bf3fe576`. Master, media playlist, `_audio_00000.ts`, `transcript.json`, `waveform.bin`, `waveform-overview.bin`, `transcript.m3u8`, `transcript_00001.vtt`, `raw/{id}`.
+- MediaConvert-era: PBS News Hour, 2026-02-03, `audio_media_id` `47c4b8f8-ae09-47dc-93da-2afb6cb83516`. Same key pattern; first segment `_audio_00001.aac`.
+- Artwork: series icon `f390ca55-70fa-4605-b972-f8c4c278763f` has `base.jpg` and `base.png`. Those files are not under the audio media prefix.
 
 ### Listening events
 
@@ -210,7 +249,7 @@ Each segment is sent to Graphiti with this format:
 
 These crons are SST constructs and run only in production (`infra/events.ts`).
 
-MediaConvert Job State Change and Transcribe Job State Change rules on the **default EventBridge bus** are leftover from the AWS-managed job path. They were created with the AWS CLI, not SST. Remove them with `docs/eventbridge-teardown.md`.
+MediaConvert and Transcribe Job State Change rules on the default bus were deleted after the cutover. See `docs/eventbridge-teardown.md`.
 
 ## Environment Variables
 
@@ -289,3 +328,8 @@ After deploy, re-run or process one real episode through `process-transcript` an
 
 - **narrows** (`../narrows`): Main API and dashboard (Next.js + Sequelize). Exposes the REST API that all Lambda functions call, and the user-facing web application.
 - **graphiti**: Knowledge graph API (FastAPI). Stores segment text and entity relationships for search and recommendations.
+
+## Specifications
+
+- [HLS output specification](docs/hls-output-spec.md) — 128 kbps AAC-LC, 48 kHz stereo, 10 s segments, MPEG-TS for new output.
+- [Waveform data format](docs/waveform-format.md) — `waveform.bin`, `waveform-overview.bin`, and optional `waveform.json`.
