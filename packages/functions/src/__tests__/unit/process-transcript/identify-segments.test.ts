@@ -42,27 +42,27 @@ const chapters: Chapter[] = [
 ];
 
 describe("targetSegmentCount", () => {
-  it("uses ~15 segments per hour", () => {
-    expect(SEGMENTS_PER_HOUR).toBe(15);
-    // 1 hour → 15
-    expect(targetSegmentCount(3600)).toBe(15);
-    // 2 hours → 30 (hits max clamp)
-    expect(targetSegmentCount(7200)).toBe(MAX_EPISODE_SEGMENTS);
+  it("uses ~12 segments per hour", () => {
+    expect(SEGMENTS_PER_HOUR).toBe(12);
+    // 1 hour → 12
+    expect(targetSegmentCount(3600)).toBe(12);
+    // 2 hours → 24 (inside the 8–30 clamp)
+    expect(targetSegmentCount(7200)).toBe(24);
   });
 
   it("clamps to MIN_EPISODE_SEGMENTS for short episodes", () => {
-    // 10 minutes → round(10/60 * 15) = 3 → clamp to 8
+    // 10 minutes → round(10/60 * 12) = 2 → clamp to 8
     expect(targetSegmentCount(600)).toBe(MIN_EPISODE_SEGMENTS);
   });
 
   it("clamps to MAX_EPISODE_SEGMENTS for long episodes", () => {
-    // 3 hours → 45 → clamp to 30
+    // 3 hours → 36 → clamp to 30
     expect(targetSegmentCount(3 * 3600)).toBe(MAX_EPISODE_SEGMENTS);
   });
 
   it("scales linearly within the clamp range", () => {
-    // 90 minutes → round(1.5 * 15) = 23
-    expect(targetSegmentCount(90 * 60)).toBe(23);
+    // 90 minutes → round(1.5 * 12) = 18
+    expect(targetSegmentCount(90 * 60)).toBe(18);
   });
 });
 

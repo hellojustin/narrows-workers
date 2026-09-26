@@ -14,7 +14,7 @@ Narrows Workers is an SST (Serverless Stack Toolkit) project that processes podc
 | Runtime | Node.js 20 |
 | Language | TypeScript |
 | Cloud | AWS (Lambda, SQS, EventBridge, S3) |
-| LLM | OpenAI (gpt-4o, gpt-4o-mini) |
+| LLM | OpenAI (gpt-4.1-mini, gpt-4o-mini) |
 | Image processing | sharp, node-vibrant |
 | RSS parsing | rss-parser |
 
@@ -163,19 +163,19 @@ Narrows API (user playback) → SQS ListeningEventsQueue
 
 The `process-transcript` Lambda is the core processing function. It:
 
-1. **Identifies Speakers** (LLM: gpt-4o)
+1. **Identifies Speakers** (LLM: gpt-4.1-mini)
    - Analyzes series/episode metadata and transcript samples
    - Maps speaker labels (spk_0, spk_1) to names and roles (host/guest)
    - Stores via `PUT /episodes/:id` with speakerData
 
-2. **Identifies Chapters** (LLM: gpt-4o)
+2. **Identifies Chapters** (LLM: gpt-4.1-mini)
    - Divides episode into 5-15 chapters per hour
    - Chapters are non-overlapping and cover full duration
    - Types: introduction, credits, promotion, section, other
    - Stores via `PUT /chapters/:id`
 
 3. **Identifies Segments** (LLM: gpt-4o-mini)
-   - Creates up to ~8-30 segments per hour (~15/hour target; 30s–full chapter each; prefer fewer, longer)
+   - Creates up to ~8-30 segments per hour (~12/hour target; 30s–full chapter each; prefer fewer, longer)
    - Evaluates content metrics:
      - **Lucidity** (0-5): Clarity of expression
      - **Polarity** (-5 to +5): Sentiment
@@ -317,7 +317,7 @@ Workers-only changes (segment sizing, `MAX_DATA_CHARS`) do **not** require a Gra
 
 After deploy, re-run or process one real episode through `process-transcript` and confirm:
 
-1. Segment count drops vs prior (~half for a typical hour-long show; soft target ~15/hour, clamp 8–30).
+1. Segment count drops vs prior (~half for a typical hour-long show; soft target ~12/hour, clamp 8–30).
 2. Some segments approach chapter length (30s–full chapter is allowed).
 3. Graphiti ingest logs rarely show `chunk 2/N` (payloads stay under 20k chars).
 4. Spot-check 2–3 long chapters: boundaries align with content shifts; no empty tail from the old 6k transcript blind spot.

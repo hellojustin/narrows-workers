@@ -2,7 +2,7 @@
  * Segment Identification Module
  *
  * Uses LLM to identify up to ~8-30 segments per hour of audio content
- * (~15/hour target). Segments are at least 30s and may span an entire chapter
+ * (~12/hour target). Segments are at least 30s and may span an entire chapter
  * when content is a single coherent unit. Prefer fewer, longer segments.
  */
 
@@ -19,7 +19,7 @@ import type {
 } from './types';
 
 /** Soft upper bound on segments per episode hour (clamped 8–30). */
-export const SEGMENTS_PER_HOUR = 15;
+export const SEGMENTS_PER_HOUR = 12;
 export const MIN_EPISODE_SEGMENTS = 8;
 export const MAX_EPISODE_SEGMENTS = 30;
 
@@ -243,7 +243,7 @@ export async function identifySegments(
     return [];
   }
 
-  // Soft upper bound on segments for the episode (~15/hour, clamped 8–30)
+  // Soft upper bound on segments for the episode (~12/hour, clamped 8–30)
   const episodeDuration = Math.max(
     ...transcriptSegments.map((s) => parseFloat(s.end_time))
   );
