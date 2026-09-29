@@ -312,6 +312,8 @@ async function sendToGraphiti(
         series_title: series.title,
         episode_id: episode.id,
         episode_title: episode.title,
+        // Graphiti builds the windows.bin key from this.
+        audio_media_id: episode.audioMediaId,
         published_at: episode.publishedAt || null,
         // Segment info
         segment_id: segment.id,
