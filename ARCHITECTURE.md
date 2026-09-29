@@ -114,6 +114,7 @@ processed/{audioMediaId}/
   waveform.bin                             always, from analyze-audio
   waveform-overview.bin                    always, decimated peaks
   waveform.json                            short episodes only
+  windows.bin                              transcript-window embeddings, from process-transcript
   hls/
     {audioMediaId}.m3u8                    master playlist (written last)
     {audioMediaId}_audio.m3u8              media playlist

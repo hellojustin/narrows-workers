@@ -318,6 +318,15 @@ export const processTranscript = new sst.aws.Function("ProcessTranscript", {
       resources: [`arn:aws:s3:::${mediaBucketName}/*`],
     },
     {
+      actions: ["s3:PutObject"],
+      resources: [`arn:aws:s3:::${mediaBucketName}/processed/*/windows.bin`],
+    },
+    // Without ListBucket, a HeadObject on a missing windows.bin returns 403, not 404.
+    {
+      actions: ["s3:ListBucket"],
+      resources: [`arn:aws:s3:::${mediaBucketName}`],
+    },
+    {
       actions: ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
       resources: [transcriptIngestQueue.arn],
     },
@@ -328,6 +337,9 @@ export const processTranscript = new sst.aws.Function("ProcessTranscript", {
     GRAPHITI_API_KEY: process.env.GRAPHITI_API_KEY ?? "",
     GRAPHITI_GRAPH_ID: process.env.GRAPHITI_GRAPH_ID ?? "",
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
+    // Must equal graphiti's EMBEDDING_MODEL_NAME and EMBEDDING_DIM.
+    WINDOWS_EMBEDDING_MODEL: process.env.WINDOWS_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    WINDOWS_EMBEDDING_DIM: process.env.WINDOWS_EMBEDDING_DIM ?? "1024",
   },
 });
 transcriptIngestQueue.subscribe(processTranscript.arn, {

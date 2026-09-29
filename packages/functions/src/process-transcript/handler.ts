@@ -5,7 +5,8 @@
  * 1. Identify speakers using LLM
  * 2. Identify chapters using LLM
  * 3. Identify segments using LLM
- * 4. Ingest segments to Graphiti
+ * 4. Write transcript-window embeddings (windows.bin)
+ * 5. Ingest segments to Graphiti
  */
 
 import type { SQSEvent, SQSHandler } from 'aws-lambda';
@@ -29,6 +30,7 @@ import { identifySpeakers } from './identify-speakers';
 import { identifyChapters } from './identify-chapters';
 import { identifySegments } from './identify-segments';
 import { ingestSegmentsToGraphiti } from './ingest-to-graphiti';
+import { writeWindowsFile } from './windows/write-windows';
 
 const s3Client = new S3Client({});
 
@@ -147,7 +149,25 @@ export const main: SQSHandler = async (event: SQSEvent) => {
           `superseding ${replaced.chaptersRemoved} chapters and ${replaced.segmentsRemoved} segments`
       );
 
-      // 6. Ingest segments to Graphiti
+      // 6. Write transcript-window embeddings for graphiti's clip shaping.
+      // Before ingest, so the file exists before any segment reaches graphiti.
+      // A failure is logged and ingest continues; graphiti falls back without it.
+      try {
+        const result = await writeWindowsFile({
+          s3: s3Client,
+          openai,
+          bucket: bucketName,
+          audioMediaId: episode.audioMediaId,
+          audioSegments: segments,
+        });
+        console.log(
+          `WINDOWS_WRITE ${result.status} episode=${episodeId} sentences=${result.sentenceCount}`
+        );
+      } catch (error) {
+        console.error(`WINDOWS_WRITE_FAILED episode=${episodeId}`, error);
+      }
+
+      // 7. Ingest segments to Graphiti
       console.log('Ingesting segments to Graphiti...');
       const graphitiIds = await ingestSegmentsToGraphiti(
         openai,
@@ -159,12 +179,12 @@ export const main: SQSHandler = async (event: SQSEvent) => {
       );
       console.log(`Ingested ${graphitiIds.length} items to Graphiti`);
 
-      // 7. Compute duration from transcript segments
+      // 8. Compute duration from transcript segments
       const transcriptDuration = segments.length > 0
         ? Math.max(...segments.map((s) => parseFloat(s.end_time)))
         : undefined;
 
-      // 8. Update episode with complete status and duration
+      // 9. Update episode with complete status and duration
       await updateEpisodeComplete(episodeId, graphitiIds, transcriptDuration);
 
       console.log(`Successfully processed transcript for episode: ${episodeId}`);
