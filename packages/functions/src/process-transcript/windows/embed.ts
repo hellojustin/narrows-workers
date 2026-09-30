@@ -56,10 +56,14 @@ export function planBatches(texts: string[]): number[][] {
   return batches;
 }
 
-/** Embed every text, at most MAX_IN_FLIGHT requests at a time. */
-export async function embedTexts(openai: OpenAI, texts: string[], options: EmbedOptions): Promise<void> {
+/**
+ * Embed every text, at most MAX_IN_FLIGHT requests at a time.
+ * Returns the tokens the API reported using.
+ */
+export async function embedTexts(openai: OpenAI, texts: string[], options: EmbedOptions): Promise<number> {
   const batches = planBatches(texts);
   let next = 0;
+  let tokens = 0;
 
   async function worker(): Promise<void> {
     while (next < batches.length) {
@@ -72,6 +76,7 @@ export async function embedTexts(openai: OpenAI, texts: string[], options: Embed
         },
         { maxRetries: MAX_RETRIES }
       );
+      tokens += response.usage?.total_tokens ?? 0;
       if (response.data.length !== batch.length) {
         throw new Error(`embedding response had ${response.data.length} vectors for ${batch.length} inputs`);
       }
@@ -83,4 +88,5 @@ export async function embedTexts(openai: OpenAI, texts: string[], options: Embed
 
   const workers = Array.from({ length: Math.min(MAX_IN_FLIGHT, batches.length) }, () => worker());
   await Promise.all(workers);
+  return tokens;
 }

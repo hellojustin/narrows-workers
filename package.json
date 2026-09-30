@@ -17,7 +17,8 @@
     "test:coverage": "vitest run --coverage",
     "test:prompt": "NODE_OPTIONS='--disable-warning=DEP0040' dotenv --no-expand -e .env.production -- tsx scripts/test-discovery-prompt.ts",
     "backfill:subtitles": "dotenv --no-expand -e .env.production -- tsx scripts/backfill-hls-subtitles.ts",
-    "backfill:waveform": "dotenv --no-expand -e .env.production -- tsx scripts/backfill-waveform-analysis.ts"
+    "backfill:waveform": "dotenv --no-expand -e .env.production -- tsx scripts/backfill-waveform-analysis.ts",
+    "backfill:windows": "dotenv --no-expand -e .env.production -- tsx scripts/backfill-windows.ts"
   },
   "workspaces": [
     "packages/*"
