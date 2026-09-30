@@ -47,6 +47,8 @@ export interface WriteWindowsResult {
   status: WriteWindowsStatus;
   sentenceCount: number;
   bytes?: number;
+  /** Embedding tokens used, as reported by the API. */
+  tokens?: number;
 }
 
 /** S3 object metadata that decides whether an existing file is current. */
@@ -107,7 +109,7 @@ export async function writeWindowsFile(args: WriteWindowsArgs): Promise<WriteWin
   // One request list covering both window lengths: index = w * N + row.
   const n = sentences.length;
   const texts = windowSets.flatMap((set) => set.map((w) => w.text));
-  await embedTexts(args.openai, texts, {
+  const tokens = await embedTexts(args.openai, texts, {
     model,
     dimensions,
     onVector: (index, vector) => writeVector(file, index % n, Math.floor(index / n), vector),
@@ -123,5 +125,5 @@ export async function writeWindowsFile(args: WriteWindowsArgs): Promise<WriteWin
     })
   );
 
-  return { status: 'written', sentenceCount: n, bytes: file.buffer.length };
+  return { status: 'written', sentenceCount: n, bytes: file.buffer.length, tokens };
 }
