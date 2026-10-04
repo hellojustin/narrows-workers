@@ -191,6 +191,7 @@ interface DiscoveryPromptRecord {
   name: string;
   prompt: string;
   mode: DiscoveryPromptMode;
+  granularity?: number;
   scheduleMinutes: number;
   isActive: boolean;
   lastRunAt: string | null;
@@ -203,6 +204,10 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
 
   const runId = `${promptRecord.id}-${Date.now()}`;
   const startedAt = new Date().toISOString();
+  const granularity =
+    typeof promptRecord.granularity === 'number' && Number.isInteger(promptRecord.granularity)
+      ? promptRecord.granularity
+      : 3;
   let runError: string | undefined;
   let episodesDiscovered = 0;
   let topicSeedsCreated = 0;
@@ -216,7 +221,7 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
     let existingSeeds: TopicSeed[] = [];
     try {
       const seedsResponse = await graphitiGet<{ seeds: TopicSeed[] }>(
-        `/graphs/${GRAPHITI_GRAPH_ID}/topics/seeds?active_only=true&limit=200`,
+        `/graphs/${GRAPHITI_GRAPH_ID}/topics/seeds?active_only=true&limit=200&granularity=${granularity}`,
       );
       existingSeeds = seedsResponse.seeds;
     } catch (err) {
@@ -233,7 +238,7 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
         stories,
         stories.map((s) => s.headline),
         runId,
-        { graphitiPost, graphId: GRAPHITI_GRAPH_ID },
+        { graphitiPost, graphId: GRAPHITI_GRAPH_ID, granularity },
       );
 
       console.log(
@@ -272,7 +277,7 @@ async function runPrompt(promptRecord: DiscoveryPromptRecord): Promise<PromptRun
         stories,
         ingestResult.ingestedHeadlines,
         runId,
-        { graphitiPost, graphId: GRAPHITI_GRAPH_ID },
+        { graphitiPost, graphId: GRAPHITI_GRAPH_ID, granularity },
       );
 
       console.log(

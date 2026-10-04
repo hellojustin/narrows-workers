@@ -3,6 +3,7 @@ import type { Story } from './types';
 export interface SeedTopicsDeps {
   graphitiPost<T>(path: string, body: unknown): Promise<T>;
   graphId: string;
+  granularity: number;
 }
 
 export async function seedTopics(
@@ -14,7 +15,10 @@ export async function seedTopics(
   const headlineSet = new Set(ingestedHeadlines);
   const toSeed = stories.filter((s) => headlineSet.has(s.headline));
 
-  console.log(`Step 6: Seeding ${toSeed.length} topics (${stories.length} stories, ${headlineSet.size} with ingested content)…`);
+  const granularity = deps.granularity;
+  console.log(
+    `Step 6: Seeding ${toSeed.length} topics at level ${granularity} (${stories.length} stories, ${headlineSet.size} with ingested content)…`,
+  );
 
   let created = 0;
 
@@ -28,7 +32,7 @@ export async function seedTopics(
         {
           name: story.headline,
           description: story.summary,
-          granularity: 3,
+          granularity,
           source: `discovery-run:${runId}`,
           valid_at: now.toISOString(),
           expire_at: expireAt.toISOString(),
